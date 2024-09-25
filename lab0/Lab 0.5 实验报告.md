@@ -2,20 +2,31 @@
 
 ## 一、实验过程
 
-先在`Lab 0`根目录下打开一个终端使用 `make debug` 进入到调试模式，然后再开一个终端输入`make gdb`进行调试。接着输入指令`x/10i $pc`可以查看到接下来要执行的十条指令。因为是刚开始的指令，所以这也是系统通电以后就要执行的十条指令。
+### 练习1:启动GDB验证启动流程
+
+*为了熟悉使用qemu和gdb进行调试工作,使用gdb调试QEMU模拟的RISC-V计算机加电开始运行到执行应用程序的第一条指令（即跳转到0x80200000）这个阶段的执行过程，说明RISC-V硬件加电后的几条指令在哪里？完成了哪些功能？要求在报告中简要写出练习过程和回答。*
+
+#### 第一阶段：复位
+
+1.首先进入到`riscv64-ucore-labcodes下的lab0中`，打开一个终端使用 `make debug` 进入到调试模式，然后再开一个终端输入`make gdb`进行调试。
+
+2.进入gdb中,输入指令`x/10i $pc`可以查看到接下来要执行的十条指令。因为是刚开始的指令，所以这也是系统通电以后就要执行的十条指令。
 
 ```assembly
-0x1000:	auipc	t0,0x0
-0x1004:	addi	a1,t0,32
-0x1008:	csrr	a0,mhartid
-0x100c:	ld	    t0,24(t0)
-0x1010:	jr	    t0
-0x1014:	unimpcsrr	a0,mhartid
+(gdb) x/10i $pc
+=> 0x1000:	auipc	t0,0x0
+   0x1004:	addi	a1,t0,32
+   0x1008:	csrr	a0,mhartid
+   0x100c:	ld	t0,24(t0)
+   0x1010:	jr	t0
+   0x1014:	unimp
+   0x1016:	unimp
+   0x1018:	unimp
+   0x101a:	0x8000
+   0x101c:	unimp
 ```
 
-
-
-接着输入指令`si`，可以单步执行指令，并且输入`info r t0`来获得指令涉及到的寄存器结果：
+3.接着输入指令`si`，可以单步执行指令，并且输入`info r t0`来获得指令涉及到的寄存器结果：
 
 ```assembly
 (gdb) si
@@ -39,9 +50,7 @@ t0             0x80000000	2147483648
 
 ```
 
-
-
-分析一开始的十条指令和寄存器值后可以知道指令干了什么：
+分析一开始的十条指令和寄存器值后可以知道指令干了什么,其中在地址为`0x1010`的指令处会跳转，故实际执行的为以下指令：
 
 ```assembly
 0x1000:	auipc	t0,0x0       # t0= pc+0x0 = 0x1000 = 4096
@@ -51,9 +60,9 @@ t0             0x80000000	2147483648
 0x1010:	jr	    t0           # j   0x80000000
 ```
 
+#### 第二阶段：Bootloader即OpeSBI启动
 
-
-分析代码不难发现代码最终会跳转到地址`0x80000000`处继续执行，接着输入`x/10i 0x80000000`，查看`0x80000000`处的10条数据。该地址处加载的是作为`qemu`的`bootloader`的`OpenSBI.bin`，该处的作用为加载操作系统内核并启动操作系统的执行。代码如下：
+1.进入到`0x80000000`后,输入`x/10i 0x80000000`，查看`0x80000000`处的10条数据。该地址处加载的是作为`qemu`的`bootloader`的`OpenSBI.bin`，该处的作用为加载操作系统内核并启动操作系统的执行。代码如下：
 
 ```assembly
 0x80000000:	csrr	a6,mhartid
@@ -68,9 +77,7 @@ t0             0x80000000	2147483648
 0x80000024:	ld	    t0,0(t0)
 ```
 
-
-
-同样的，我们可以使用指令`si`和`info r t0`来了解寄存器的变化，在此就不再演示，直接给出代码解释：
+2.同样的，我们可以使用指令`si`和`info r t0`来了解寄存器的变化，在此就不再演示，直接给出代码解释：
 
 ```assembly
 0x80000000:	csrr	a6,mhartid     # a6 = mhartid = 0
@@ -85,17 +92,15 @@ t0             0x80000000	2147483648
 0x80000024:	ld	    t0,0(t0)       # t0 = [0x80000400]
 ```
 
+通过实验指导书可以知道， `OpenSBI`启动之后将要跳转到的一段汇编代码：`kern/init/entry.S`。在这里进行内核栈的分配，然后转入C语言编写的内核初始化函数。而这段汇编代码的地址是固定的`0x80200000`。
 
+3.所以我们输入指令`break kern_entry`，在目标函数`kern_entry`的第一条指令处设置断点，输出如下：
 
-通过实验指导书可以知道， `OpenSBI`启动之后将要跳转到的一段汇编代码：`kern/init/entry.S`。在这里进行内核栈的分配，然后转入C语言编写的内核初始化函数。而这段汇编代码的地址是固定的`0x80200000`。所以我们输入指令`break kern_entry`，在目标函数`kern_entry`的第一条指令处设置断点，输出如下：
-
-```c
+```assembly
 Breakpoint 1 at 0x80200000: file kern/init/entry.S, line 7.
 ```
 
-
-
-输入指令`x/5i 0x80200000`，查看汇编代码：
+4.当然我们也可以输入指令`x/5i 0x80200000`，查看汇编代码：
 
 ```assembly
 0x80200000 <kern_entry>  :	auipc  sp,0x3
@@ -107,9 +112,7 @@ Breakpoint 1 at 0x80200000: file kern/init/entry.S, line 7.
 
 不难发现，在`0x80200008`地址处，程序跳转到了`kern_init`，在该函数里完成内核的其他初始化工作。
 
-
-
-输入`continue`执行直到断点，`make debug`终端输出如下：
+5.然后输入`continue`执行直到断点，`make debug`终端输出如下：
 
 ```assembly
 OpenSBI v0.4 (Jul  2 2019 11:53:53)
@@ -135,15 +138,29 @@ PMP1: 0x0000000000000000-0xffffffffffffffff (A,R,W,X)
 
 ```
 
-发现，作为`bootloader`的`opensbi`已经启动。
+可以发现，作为`bootloader`的`opensbi`已经启动。
 
-接着输入`break kern_init`,，输出如下：
+同时gdb窗口显示：
+
+```assembly
+(gdb) c
+Continuing.
+
+Breakpoint 1, kern_entry () at kern/init/entry.S:7
+7	    la sp, bootstacktop
+```
+
+在这行代码中，执行了一个 `la` 指令，用于将栈指针寄存器 `sp` 设置为 `bootstacktop` 的值。
+
+#### 第三阶段：内核镜像启动
+
+1.为了对`kern_init`进行分析，接着输入`break kern_init`,输出如下：
 
 ```assembly
 Breakpoint 2 at 0x8020000c: file kern/init/init.c, line 8.
 ```
 
-输入`continue`，接着输入`disassemble kern_init`查看`kern_init`函数的反汇编代码：
+2.输入`continue`运行到第二个断点处，接着输入`disassemble kern_init`查看`kern_init`函数的反汇编代码：
 
 ```assembly
 0x000000008020000c <+0>:	auipc	a0,0x3
@@ -189,25 +206,19 @@ PMP1: 0x0000000000000000-0xffffffffffffffff (A,R,W,X)
 (THU.CST) os is loading ...
 ```
 
-
-
 ## 二、实验结果
 
 ### 1、RISC-V硬件加电后的几条指令在哪里？
 
 通过实验可以知道，RISC-V硬件加电后的几条指令从`0x1000`地址开始，直到在`0x1010`处进行跳转结束。
 
-
-
 ### 2、完成的功能有哪些？
 
-1. `auipc t0,0x0`：用于加载一个20bit的立即数，`t0`中保存的数据为 `pc+0x0`
+1. `auipc t0,0x0`：用于加载一个20bit的立即数，`t0`中保存的数据为 `pc+0x0`,用于PC相对寻址。
 2. `addi	a1,t0,32`：将`t0`加上`32`，赋值给`a1`。
 3. `csrr	a0,mhartid`：读取状态寄存器`mhartid`，存入`a0`中。`mhartid`为正在运行代码的硬件线程的整数ID。
 4. `ld	    t0,24(t0)`：加载从`t0+24`地址处读取8个字节，存入`t0`。
-5. `jr	    t0`：将程序跳到作为`bootloader`的`OpenSBI.bin`
-
-
+5. `jr	    t0`：将程序跳到作为`bootloader`的`OpenSBI.bin`此处为`0x80000000`）。
 
 ## 三、实验感悟
 
