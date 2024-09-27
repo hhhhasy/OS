@@ -374,7 +374,27 @@ void trap(struct trapframe *tf) { trap_dispatch(tf); }
 
 `__alltraps` 需要保存所有寄存器，其目的是为了处理各种类型的异常，以确保在异常处理程序中能够访问所有的寄存器状态。
 
+## 拓展练习Challenge2：理解上下文切换机制
 
+### 题目：
+
+> 在trapentry.S中汇编代码 csrw sscratch, sp；csrrw s0, sscratch, x0实现了什么操作，目的是什么？save all里面保存了stval scause这些csr，而在restore all里面却不还原它们？那这样store的意义何在呢？
+
+### 解答：
+
+### 在trapentry.S中汇编代码 csrw sscratch, sp；csrrw s0, sscratch, x0实现了什么操作，目的是什么？
+
+1. **csrw sscratch, sp**
+
+将当前的sp的值写入到 sscratch 寄存器中。这样做的目的是为了保存栈指针, 在异常处理期间，能够知道异常发生时的栈指针位置。
+
+2. **csrrw s0, sscratch, x0**
+
+这条指令将 sscratch 寄存器的值读出并写入到 s0 寄存器中，同时将 x0 寄存器的值写入 sscratch 寄存器。x0 是一个通用寄存器，通常用来保存一个常数值0。这条指令实际上用 x0 的值更新了 sscratch，并将之前保存的栈指针sp的值传递给了 s0。sscratch 寄存器被用作一个传递信息的媒介，用于在异常发生和异常处理程序之间传递数据。
+
+### save all里面保存了stval scause这些csr，而在restore all里面却不还原它们？那这样store的意义何在呢？
+
+保存stval scause这些这些CSR的值是为了在异常处理程序中能够分析异常的原因和上下文，从而做出正确的处理，而在异常处理完成后，通常不需要恢复这些值，因为它们只是用于调试和异常处理的上下文信息。不在 RESTORE_ALL 中恢复这些CSR是为了简化异常处理流程，因为这些值在每次异常发生时都可能不同，不需要保留它们的旧值。
 
 ## 拓展练习Challenge3：完善异常中断
 
