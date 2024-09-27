@@ -200,3 +200,213 @@ Kernel executable memory footprint: 17KB
 100ticks
 100ticks
 ```
+
+
+
+## 扩展练习Challenge1：描述与理解中断流程
+
+### 题目：
+
+> 描述 ucore 中处理中断异常的流程（从异常的产生开始），其中 mov a0，sp 的目的是什么？SAVE_ALL中寄存器保存在栈中的位置是什么确定的？对于任何中断，__alltraps 中都需要保存所有寄存器吗？请说明理由。
+
+### 分析：
+
+#### 查看并分析trapentry.S
+
+```assembly
+#include <riscv.h>
+
+    .macro SAVE_ALL
+
+    csrw sscratch, sp
+
+    addi sp, sp, -36 * REGBYTES
+    # save x registers
+    STORE x0, 0*REGBYTES(sp)
+    STORE x1, 1*REGBYTES(sp)
+    STORE x3, 3*REGBYTES(sp)
+    STORE x4, 4*REGBYTES(sp)
+    STORE x5, 5*REGBYTES(sp)
+    STORE x6, 6*REGBYTES(sp)
+    STORE x7, 7*REGBYTES(sp)
+    STORE x8, 8*REGBYTES(sp)
+    STORE x9, 9*REGBYTES(sp)
+    STORE x10, 10*REGBYTES(sp)
+    STORE x11, 11*REGBYTES(sp)
+    STORE x12, 12*REGBYTES(sp)
+    STORE x13, 13*REGBYTES(sp)
+    STORE x14, 14*REGBYTES(sp)
+    STORE x15, 15*REGBYTES(sp)
+    STORE x16, 16*REGBYTES(sp)
+    STORE x17, 17*REGBYTES(sp)
+    STORE x18, 18*REGBYTES(sp)
+    STORE x19, 19*REGBYTES(sp)
+    STORE x20, 20*REGBYTES(sp)
+    STORE x21, 21*REGBYTES(sp)
+    STORE x22, 22*REGBYTES(sp)
+    STORE x23, 23*REGBYTES(sp)
+    STORE x24, 24*REGBYTES(sp)
+    STORE x25, 25*REGBYTES(sp)
+    STORE x26, 26*REGBYTES(sp)
+    STORE x27, 27*REGBYTES(sp)
+    STORE x28, 28*REGBYTES(sp)
+    STORE x29, 29*REGBYTES(sp)
+    STORE x30, 30*REGBYTES(sp)
+    STORE x31, 31*REGBYTES(sp)
+
+    # get sr, epc, badvaddr, cause
+    # Set sscratch register to 0, so that if a recursive exception
+    # occurs, the exception vector knows it came from the kernel
+    csrrw s0, sscratch, x0
+    csrr s1, sstatus
+    csrr s2, sepc
+    csrr s3, sbadaddr
+    csrr s4, scause
+
+    STORE s0, 2*REGBYTES(sp)
+    STORE s1, 32*REGBYTES(sp)
+    STORE s2, 33*REGBYTES(sp)
+    STORE s3, 34*REGBYTES(sp)
+    STORE s4, 35*REGBYTES(sp)
+    .endm
+
+    .macro RESTORE_ALL
+
+    LOAD s1, 32*REGBYTES(sp)
+    LOAD s2, 33*REGBYTES(sp)
+
+    csrw sstatus, s1
+    csrw sepc, s2
+
+    # restore x registers
+    LOAD x1, 1*REGBYTES(sp)
+    LOAD x3, 3*REGBYTES(sp)
+    LOAD x4, 4*REGBYTES(sp)
+    LOAD x5, 5*REGBYTES(sp)
+    LOAD x6, 6*REGBYTES(sp)
+    LOAD x7, 7*REGBYTES(sp)
+    LOAD x8, 8*REGBYTES(sp)
+    LOAD x9, 9*REGBYTES(sp)
+    LOAD x10, 10*REGBYTES(sp)
+    LOAD x11, 11*REGBYTES(sp)
+    LOAD x12, 12*REGBYTES(sp)
+    LOAD x13, 13*REGBYTES(sp)
+    LOAD x14, 14*REGBYTES(sp)
+    LOAD x15, 15*REGBYTES(sp)
+    LOAD x16, 16*REGBYTES(sp)
+    LOAD x17, 17*REGBYTES(sp)
+    LOAD x18, 18*REGBYTES(sp)
+    LOAD x19, 19*REGBYTES(sp)
+    LOAD x20, 20*REGBYTES(sp)
+    LOAD x21, 21*REGBYTES(sp)
+    LOAD x22, 22*REGBYTES(sp)
+    LOAD x23, 23*REGBYTES(sp)
+    LOAD x24, 24*REGBYTES(sp)
+    LOAD x25, 25*REGBYTES(sp)
+    LOAD x26, 26*REGBYTES(sp)
+    LOAD x27, 27*REGBYTES(sp)
+    LOAD x28, 28*REGBYTES(sp)
+    LOAD x29, 29*REGBYTES(sp)
+    LOAD x30, 30*REGBYTES(sp)
+    LOAD x31, 31*REGBYTES(sp)
+    # restore sp last
+    LOAD x2, 2*REGBYTES(sp)
+    #addi sp, sp, 36 * REGBYTES
+    .endm
+
+    .globl __alltraps
+.align(2)
+__alltraps:
+    SAVE_ALL
+
+    move  a0, sp
+    jal trap
+    # sp should be the same as before "jal trap"
+
+    .globl __trapret
+__trapret:
+    RESTORE_ALL
+    # return from supervisor call
+    sret
+```
+
+通过查看并分析代码，可以知道各个代码段的主要功能：
+
+1. **`__alltraps：`**通过调用`SAVE_ALL`宏来保存进程上下文，然后通过指令`move  a0, sp`来初始化参数寄存器a0,接着跳转到`trap`函数处理不同类型的中断。
+2. **`SAVE_ALL：`**在该宏里面，首先使用指令`addi sp, sp, -36 * REGBYTES`给寄存器开辟空间，然后把上下文保存到栈里面，其中不止包括通用寄存器，还有各种状态寄存器如`sstatus`，`sepc`,`scause`等。
+3. **`RESTORE_ALL：`**在中断或异常处理结束之后，使用该宏来恢复上下文。
+4. **`__trapret：`**在该标签里，使用`RESTORE_ALL`来恢复上下文，最后使用`sret`跳转去执行异常出现的下一条指令。
+
+
+
+### 解答：
+
+### ucore 中处理中断异常的流程
+
+1. **异常产生**
+   - 中断异常是由于某种事件（例如外部硬件触发的事件，例如时钟中断或外部设备输入）而引发的。当这样的事件发生时，处理器会产生一个异常。在我们本次代码中，程序通过`clock_init()`来产生一次时钟中断。
+
+2. **捕获异常**
+   - 在程序产生异常或中断之后，程序会捕获到异常，并访问`stvec`寄存器，来定位中断处理程序。若`stvec`寄存器最低2位是00，则说明其高位保存的是唯一的中断处理程序的地址；如果是01，说明其高位保存的是中断向量表的地址，操作系统通过不同的异常原因来索引中断向量表以获取处理程序的地址。在本次实验中，是在第一种情况下进行实验，并且中断处理地址为：`__alltraps`。
+
+3. **处理异常**
+   - 进入到`__alltraps`之后，通过`SAVE_ALL`来保存上下文，然后进入`trap()`函数进行处理。在`trap`函数中，首先通过tp->scause来判断异常种类，然后进入到相应的处理函数进行处理。在处理结束之后，跳转到`__trapret`,主要是通过`RESTORE_ALL`汇编宏恢复各个寄存器的值，然后通过`sret`指令把`sepc`的值赋值给`pc`，继续执行中断指令之后的程序指令。
+
+### mov a0，sp 的目的是什么？
+
+首先查看并分析trap函数：
+
+```c
+void trap(struct trapframe *tf) { trap_dispatch(tf); }
+```
+
+ 通过分析可知，trap函数只需要一个指针型参数，而riscv64中，参数寄存器为a0-a7。所以在调用`trap`函数之前，要把栈顶指针寄存器`$sp`的值放到ao寄存器里面，这是因为在执行完`SAVE_ALL`宏之后，`$sp`寄存器里面保存着当前的中断帧，从而实现对中断的处理。
+
+
+
+### SAVE_ALL中寄存器保存在栈中的位置是什么确定的？
+
+在`SAVE_ALL`宏中，各个寄存器保存的位置是通过栈顶寄存器sp来索引的。在保存上下文之前程序首先通过指令`addi sp, sp, -36 * REGBYTES`，在内存中开辟出了保存上下文的内存区域，然后我们通过栈顶指针sp来访问该段区域的不同位置，从而把对应的寄存器保存在栈中。              
+
+   
+
+### 对于任何中断，`__alltraps` 中都需要保存所有寄存器吗？
+
+`__alltraps` 需要保存所有寄存器，其目的是为了处理各种类型的异常，以确保在异常处理程序中能够访问所有的寄存器状态。
+
+
+
+## 拓展练习Challenge3：完善异常中断
+
+### 题目：
+
+> 编程完善异常中断
+
+### 解答：
+
+```c
+case CAUSE_ILLEGAL_INSTRUCTION:
+             // 非法指令异常处理
+             /* LAB1 CHALLENGE3   YOUR CODE :2210737/2212998/2210351  */
+            /*(1)输出指令异常类型（ Illegal instruction）
+             *(2)输出异常指令地址
+             *(3)更新 tf->epc寄存器
+            */
+            cprintf("Illegal instruction\n");
+            cprintf("%x",tf->epc);
+            tf->epc+=8;//因为是64位，所以需要8个字节
+            break;
+
+case CAUSE_BREAKPOINT:
+            //断点异常处理
+            /* LAB1 CHALLLENGE3   YOUR CODE :2210737/2212998/2210351  */
+            /*(1)输出指令异常类型（ breakpoint）
+             *(2)输出异常指令地址
+             *(3)更新 tf->epc寄存器
+            */
+            cprintf("breakpoint\n");
+            cprintf("%x",tf->epc);
+            tf->epc+=8;//因为是64位，所以需要8个字节
+            break;
+```
+
