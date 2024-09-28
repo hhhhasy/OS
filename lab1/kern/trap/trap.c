@@ -161,7 +161,7 @@ void exception_handler(struct trapframe *tf) {
             */
             cprintf("Illegal instruction\n");
             cprintf("%x",tf->epc);
-            tf->epc+=8;
+            tf->epc+=4;
             
             break;
         case CAUSE_BREAKPOINT:
@@ -173,7 +173,7 @@ void exception_handler(struct trapframe *tf) {
             */
             cprintf("breakpoint\n");
             cprintf("%x",tf->epc);
-            tf->epc+=8;
+            tf->epc+=4;
             break;
         case CAUSE_MISALIGNED_LOAD:
             break;
