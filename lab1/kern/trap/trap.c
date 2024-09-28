@@ -173,7 +173,7 @@ void exception_handler(struct trapframe *tf) {
             */
             cprintf("breakpoint\n");
             cprintf("%x",tf->epc);
-            tf->epc+=4;
+            tf->epc+=2;
             break;
         case CAUSE_MISALIGNED_LOAD:
             break;

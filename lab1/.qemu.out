@@ -24,14 +24,15 @@ PMP1: 0x0000000000000000-0xffffffffffffffff (A,R,W,X)
 
 Special kernel symbols:
   entry  0x000000008020000a (virtual)
-  etext  0x0000000080200a00 (virtual)
+  etext  0x0000000080200a08 (virtual)
   edata  0x0000000080204010 (virtual)
   end    0x0000000080204028 (virtual)
 Kernel executable memory footprint: 17KB
 ++ setup timer interrupts
-100 ticks
-100 ticks
-100 ticks
+sbi_emulate_csr_read: hartid0: invalid csr_num=0x302
+Illegal instruction
+8020004ebreakpoint
+80200052100 ticks
 100 ticks
 100 ticks
 100 ticks
