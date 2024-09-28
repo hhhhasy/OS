@@ -116,7 +116,7 @@ void interrupt_handler(struct trapframe *tf) {
             ticks+=1;
             if(ticks==100){
             ticks=0;
-            cprintf("100ticks\n");
+            cprintf("100 ticks\n");
             num+=1;
             }
             if(num==10){
