@@ -8,10 +8,8 @@
 #include <riscv.h>
 #include <stdio.h>
 #include <trap.h>
-#include <sbi.h>
 
 #define TICK_NUM 100
-volatile size_t num=0;
 
 static void print_ticks() {
     cprintf("%d ticks\n", TICK_NUM);
@@ -21,13 +19,33 @@ static void print_ticks() {
 #endif
 }
 
-/**
- * @brief      Load supervisor trap entry in RISC-V
+/* idt_init - initialize IDT to each of the entry points in kern/trap/vectors.S
  */
 void idt_init(void) {
+    /* LAB1 YOUR CODE : STEP 2 */
+    /* (1) Where are the entry addrs of each Interrupt Service Routine (ISR)?
+     *     All ISR's entry addrs are stored in __vectors. where is uintptr_t
+     * __vectors[] ?
+     *     __vectors[] is in kern/trap/vector.S which is produced by
+     * tools/vector.c
+     *     (try "make" command in lab1, then you will find vector.S in kern/trap
+     * DIR)
+     *     You can use  "extern uintptr_t __vectors[];" to define this extern
+     * variable which will be used later.
+     * (2) Now you should setup the entries of ISR in Interrupt Description
+     * Table (IDT).
+     *     Can you see idt[256] in this file? Yes, it's IDT! you can use SETGATE
+     * macro to setup each item of IDT
+     * (3) After setup the contents of IDT, you will let CPU know where is the
+     * IDT by using 'lidt' instruction.
+     *     You don't know the meaning of this instruction? just google it! and
+     * check the libs/x86.h to know more.
+     *     Notice: the argument of lidt is idt_pd. try to find it!
+     */
+
     extern void __alltraps(void);
-    /* Set sscratch register to 0, indicating to exception vector that we are
-     * presently executing in the kernel */
+    /* Set sup0 scratch register to 0, indicating to exception vector
+       that we are presently executing in the kernel */
     write_csr(sscratch, 0);
     /* Set the exception vector address */
     write_csr(stvec, &__alltraps);
@@ -98,7 +116,7 @@ void interrupt_handler(struct trapframe *tf) {
             cprintf("Machine software interrupt\n");
             break;
         case IRQ_U_TIMER:
-            cprintf("User software interrupt\n");
+            cprintf("User Timer interrupt\n");
             break;
         case IRQ_S_TIMER:
             // "All bits besides SSIP and USIP in the sip register are
@@ -106,21 +124,11 @@ void interrupt_handler(struct trapframe *tf) {
             // In fact, Call sbi_set_timer will clear STIP, or you can clear it
             // directly.
             // cprintf("Supervisor timer interrupt\n");
-             /* LAB1 EXERCISE2   YOUR CODE : 2210737/2212998/2210351 */
-            /*(1)设置下次时钟中断- clock_set_next_event()
-             *(2)计数器（ticks）加一
-             *(3)当计数器加到100的时候，我们会输出一个`100ticks`表示我们触发了100次时钟中断，同时打印次数（num）加一
-            * (4)判断打印次数，当打印次数为10时，调用<sbi.h>中的关机函数关机
-            */
+            // clear_csr(sip, SIP_STIP);
             clock_set_next_event();
-            ticks+=1;
-            if(ticks==100){
-            ticks=0;
-            cprintf("100 ticks\n");
-            num+=1;
+            if (++ticks % TICK_NUM == 0) {
+                print_ticks();
             }
-            if(num==10){
-            sbi_shutdown();}
             break;
         case IRQ_H_TIMER:
             cprintf("Hypervisor software interrupt\n");
@@ -153,27 +161,8 @@ void exception_handler(struct trapframe *tf) {
         case CAUSE_FAULT_FETCH:
             break;
         case CAUSE_ILLEGAL_INSTRUCTION:
-             // 非法指令异常处理
-             /* LAB1 CHALLENGE3   YOUR CODE :2210737/2212998/2210351  */
-            /*(1)输出指令异常类型（ Illegal instruction）
-             *(2)输出异常指令地址
-             *(3)更新 tf->epc寄存器
-            */
-            cprintf("Illegal instruction\n");
-            cprintf("%x",tf->epc);
-            tf->epc+=4;
-            
             break;
         case CAUSE_BREAKPOINT:
-            //断点异常处理
-            /* LAB1 CHALLLENGE3   YOUR CODE :2210737/2212998/2210351  */
-            /*(1)输出指令异常类型（ breakpoint）
-             *(2)输出异常指令地址
-             *(3)更新 tf->epc寄存器
-            */
-            cprintf("breakpoint\n");
-            cprintf("%x",tf->epc);
-            tf->epc+=2;
             break;
         case CAUSE_MISALIGNED_LOAD:
             break;
@@ -197,7 +186,6 @@ void exception_handler(struct trapframe *tf) {
     }
 }
 
-/* trap_dispatch - dispatch based on what type of trap occurred */
 static inline void trap_dispatch(struct trapframe *tf) {
     if ((intptr_t)tf->cause < 0) {
         // interrupts
@@ -214,4 +202,7 @@ static inline void trap_dispatch(struct trapframe *tf) {
  * the code in kern/trap/trapentry.S restores the old CPU state saved in the
  * trapframe and then uses the iret instruction to return from the exception.
  * */
-void trap(struct trapframe *tf) { trap_dispatch(tf); }
+void trap(struct trapframe *tf) {
+    // dispatch based on what type of trap occurred
+    trap_dispatch(tf);
+}
