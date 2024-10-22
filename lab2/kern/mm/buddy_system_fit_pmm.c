@@ -14,6 +14,7 @@ static void buddy_init(void) {
     }
 }
 
+
 static void buddy_init_memmap(struct Page *base, size_t n) {
     assert(n > 0);
 
@@ -33,7 +34,7 @@ static void buddy_init_memmap(struct Page *base, size_t n) {
         p->property = order_size;
         SetPageProperty(p);
         free_area[order].nr_free += 1;
-        list_add_before(&(free_area[order].free_list), &(p->page_link));
+        list_add(&(free_area[order].free_list), &(p->page_link));
         origin_size -= order_size;
         while (order > 0 && origin_size < order_size) {
             order_size >>= 1;
@@ -57,6 +58,7 @@ static void cut_page(size_t n) {
     buddy_page->property = (1 << i);
     page->property = (1 << i);
     SetPageProperty(buddy_page);
+    
     list_add(&(free_area[i].free_list), &(page->page_link));
     list_add(&(page->page_link), &(buddy_page->page_link));
     free_area[i].nr_free += 2;
@@ -267,8 +269,8 @@ static void buddy_check(void) {
     cprintf("%d ",total);
     }
     
-    cprintf("\n最后 p2 请求 5 页\n");
-    p2 = buddy_alloc_pages(5);
+    cprintf("\n最后 p2 请求 1023页\n");
+    p2 = buddy_alloc_pages(1023);
     
     for(int i=0;i<MAX_ORDER;i++){
     size_t total =free_area[i].nr_free;
@@ -282,7 +284,7 @@ static void buddy_check(void) {
     cprintf("\n p2 的虚拟地址 0x%016lx.\n", p2);
     
     
-    cprintf("收回p0\n");
+    cprintf("\n 收回p0\n");
     buddy_free_pages(p0,5);
     for(int i=0;i<MAX_ORDER;i++){
     size_t total =free_area[i].nr_free;
@@ -290,7 +292,7 @@ static void buddy_check(void) {
     cprintf("%d ",total);
     }
     
-    cprintf("收回p1\n");
+    cprintf("\n 收回p1\n");
     buddy_free_pages(p1,5);
     for(int i=0;i<MAX_ORDER;i++){
     size_t total =free_area[i].nr_free;
@@ -298,36 +300,17 @@ static void buddy_check(void) {
     cprintf("%d ",total);
     }
     
-    cprintf("收回p2\n");
-    buddy_free_pages(p2,5);
+    cprintf("\n 收回p2\n");
+    buddy_free_pages(p2,1023);
     for(int i=0;i<MAX_ORDER;i++){
     size_t total =free_area[i].nr_free;
     
     cprintf("%d ",total);
     }
     
-    /*struct Page *p0, *p1, *p2;
-    p0 = p1 = p2 = NULL;
-
-    cprintf("首先 p0 请求 5 页\n");
-    p0 = buddy_alloc_pages(5);
-
-    cprintf("然后 p1 请求 5 页\n");
-    p1 = buddy_alloc_pages(5);
-
-    cprintf("最后 p2 请求 5 页\n");
-    p2 = buddy_alloc_pages(5);
-
-    cprintf("p0 的虚拟地址 0x%016lx.\n", p0);
-    cprintf("p1 的虚拟地址 0x%016lx.\n", p1);
-    cprintf("p2 的虚拟地址 0x%016lx.\n", p2);
-
-    assert(p0!= p1 && p0!= p2 && p1!= p2);
-    assert(page_ref(p0) == 0 && page_ref(p1) == 0 && page_ref(p2) == 0);
-
-    assert(page2pa(p0) < npage * PGSIZE);
-    assert(page2pa(p1) < npage * PGSIZE);
-    assert(page2pa(p2) < npage * PGSIZE);*/
+    cprintf("\n");
+    
+    
 }
 
 
