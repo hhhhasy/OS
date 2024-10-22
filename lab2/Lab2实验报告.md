@@ -84,15 +84,15 @@ First-fit 算法的核心思想是：在分配物理内存时，总是选择第�
 >
 > - 你的 Best-Fit 算法是否有进一步的改进空间？
 
-### 解答
+### Best-Fit 页面分配算法的实现
 
-在实现 Best-Fit 算法之前，我们首先要知道 Best-Fit 算法的原理。该算法的核心思想就是找到最佳匹配的空闲内存块，避免内存空间浪费。所以我们只需要修改 `default_alloc_pages` 函数，其它的跟 first-fit 算法都是一样的。
+在实现 Best Fit 算法时，我主要参考了 `kern/mm/default_pmm.c` 中 First Fit 算法的实现，并对关键函数进行了修改。Best Fit 算法的核心思想是找到最佳匹配的空闲内存块，以最大程度地减少内存碎片。因此，我们只需要修改 `default_alloc_pages` 函数，其他函数与 First-Fit 算法基本相同。
 
 **`best_fit_alloc_pages`** 函数实现：
 
 ```c
 static struct Page *
-best_fit_alloc_pages(size_t n) {
+    best_fit_alloc_pages(size_t n) {
     assert(n > 0);
     if (n > nr_free) {
         return NULL;
@@ -100,7 +100,7 @@ best_fit_alloc_pages(size_t n) {
     struct Page *page = NULL;
     list_entry_t *le = &free_list;
     size_t min_size = nr_free + 1; //记录当前最小的内存块大小
-     /*LAB2 EXERCISE 2: YOUR CODE*/ 
+    /*LAB2 EXERCISE 2: YOUR CODE*/ 
     // 下面的代码是first-fit的部分代码，请修改下面的代码改为best-fit
     // 遍历空闲链表，查找满足需求的空闲页框
     // 如果找到满足需求的页面，记录该页面以及当前找到的最小连续空闲页框数量
@@ -110,7 +110,6 @@ best_fit_alloc_pages(size_t n) {
         if (p->property >= n && p->property <min_size) { 
             page = p; //当前的最佳匹配
             min_size=p->property; //更新最小内存块大小
-            
         }
     }
 
@@ -130,11 +129,40 @@ best_fit_alloc_pages(size_t n) {
 }
 ```
 
-**运行截图：**
+另外，我们还需要在 pmm.c 中加上：
 
-我们可以使用 make grade 命令来运行测试文件，发现可以通过测试。
+```c
+#include <best_fit_pmm.h>
+```
 
-![image-20241019173535855](C:\Users\HP\AppData\Roaming\Typora\typora-user-images\image-20241019173535855.png)
+并且在 init_pmm_manger 处修改管理算法为 best fit:
+
+```c
+static void init_pmm_manager(void) {
+    pmm_manager = &best_fit_pmm_manager;//在此更换页面管理函数指针
+    cprintf("memory management: %s\n", pmm_manager->name);
+    pmm_manager->init();
+}
+```
+
+### Best-Fit算法的进一步改进空间
+
+正如我们上述实现的那样，在找到最优的分配页框的时候，我们需要对空闲页链表 `free_list`的所有页框进行遍历，从而满足要求的空闲页框，因此分配效率上会有失偏颇；并且，与First Fit相同的是，Best Fit算法仍然会产生一些更加难以利用的较小的内存碎片。
+
+1. **性能优化**：
+	- 当前实现每次分配都需要遍历整个空闲链表，时间复杂度为 O(n)。
+	- 可以考虑使用更高效的数据结构，如平衡树（如红黑树）或跳表，以提高查找效率至 O(log n)。
+2. **内存碎片处理**：
+	- 实现内存压缩算法，定期整理内存，合并小的空闲块。
+	- 引入分割阈值，当剩余空间大于某个阈值时才进行分割，减少小碎片的产生。
+3. **多级空闲列表**：
+	- 根据大小范围维护多个空闲列表，加快特定大小范围的分配速度。
+4. **预分配和缓存机制**：
+	- 对常用大小的内存块进行预分配。
+	- 实现简单的缓存机制，加速频繁的小块内存分配。
+5. **智能合并策略**：
+	- 在空闲时进行主动合并，而不仅仅是在释放时合并相邻块。
+	- 实现更智能的合并策略，如考虑合并非相邻但接近的小块。
 
 ## 扩展练习 Challenge：buddy system（伙伴系统）分配算法（需要编程）
 
@@ -322,6 +350,7 @@ static void buddy_check(void) {
 > - 如果 OS 无法提前知道当前硬件的可用物理内存范围，请问你有何办法让 OS 获取可用物理内存范围？
 
 ### 解答
+
 
 
 
