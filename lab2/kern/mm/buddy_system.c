@@ -9,209 +9,148 @@
 static free_area_t free_area[MAX_ORDER]; // 每个阶数一个空闲列表
 
 static void buddy_init(void) {
-    for (int i = 0; i <= MAX_ORDER-1; i++) {
-        list_init(&free_area[i].free_list);
-        free_area[i].nr_free = 0;
+    for (int i = 0; i < MAX_ORDER; i++) {
+        list_init(&free_area[i].free_list); // 初始化每个阶的空闲列表
+        free_area[i].nr_free = 0; // 初始化每个阶的空闲页面计数
     }
 }
 
-
 static void buddy_init_memmap(struct Page *base, size_t n) {
-    assert(n > 0);
+    assert(n > 0); // 确保请求的页面数量大于 0
 
-    struct Page *p = base;
-    for (; p!= base + n; p++) {
-        assert(PageReserved(p));
-        p->flags = p->property = 0;
-        set_page_ref(p, 0);
+    for (struct Page *p = base; p != base + n; p++) {
+        assert(PageReserved(p)); // 确保页面是保留的
+        p->flags = p->property = 0; // 清除标志和属性
+        set_page_ref(p, 0); // 设置引用计数为 0
     }
 
-    size_t order = MAX_ORDER-1;
-    size_t order_size = 1 << order;
+    size_t order = MAX_ORDER - 1;
+    size_t order_size = 1 << order; // 计算当前阶的大小
     size_t origin_size = n;
-    p = base;
 
-    while (origin_size!= 0) {
+    for (struct Page *p = base; origin_size != 0; p += order_size) {
         p->property = order_size;
         SetPageProperty(p);
-        free_area[order].nr_free += 1;
-        list_add(&(free_area[order].free_list), &(p->page_link));
-        origin_size -= order_size;
+        free_area[order].nr_free++;
+        list_add(&(free_area[order].free_list), &(p->page_link)); // 将页加入空闲列表
+        origin_size -= order_size; // 减少剩余未处理的页面数量
+
         while (order > 0 && origin_size < order_size) {
             order_size >>= 1;
-            order -= 1;
+            order--;
         }
-        p += order_size;
     }
 }
 
 static void cut_page(size_t n) {
-    if (free_area[n].nr_free == 0) {
-        cut_page(n + 1);
+    while (n < MAX_ORDER && free_area[n].nr_free == 0) {
+        n++; // 查找下一个有空闲页面的阶
     }
-    list_entry_t* le = list_next(&(free_area[n].free_list));
-    struct Page *page = le2page(le, page_link);
-    list_del(&(page->page_link));
-    free_area[n].nr_free--;
+    if (n == MAX_ORDER) return; // 如果没有可用的阶，则返回
 
-    size_t i = n - 1;
-    struct Page *buddy_page = page + (1 << i);
-    buddy_page->property = (1 << i);
-    page->property = (1 << i);
-    SetPageProperty(buddy_page);
-    
-    list_add(&(free_area[i].free_list), &(page->page_link));
-    list_add(&(page->page_link), &(buddy_page->page_link));
-    free_area[i].nr_free += 2;
+    list_entry_t *le = list_next(&(free_area[n].free_list));
+    struct Page *page = le2page(le, page_link); // 获取空闲页
+    list_del(&(page->page_link)); // 从空闲列表中删除
+    free_area[n].nr_free--; // 更新空闲页面计数
+
+    size_t i = n - 1; // 减小阶数
+    struct Page *buddy_page = page + (1 << i); // 计算伙伴页的地址
+    buddy_page->property = (1 << i); // 设置伙伴页的属性
+    page->property = (1 << i); // 设置当前页的属性
+    SetPageProperty(buddy_page); // 标记伙伴页
+
+    list_add(&(free_area[i].free_list), &(page->page_link)); // 将当前页加入到较小阶的空闲列表
+    list_add(&(buddy_page->page_link), &(free_area[i].free_list)); // 将伙伴页加入到空闲列表
+    free_area[i].nr_free += 2; // 更新空闲页面计数
 }
 
 static struct Page *buddy_alloc_pages(size_t n) {
     assert(n > 0);
     size_t order = 0;
 
-    // 计算所需空间的最小阶数
     while ((1 << order) < n) {
-        order++;
+        order++; // 计算所需的阶数
     }
 
-    if (free_area[order].nr_free > 0) {
-        // 找到第一个空闲块
-        list_entry_t* le = list_next(&(free_area[order].free_list));
-        struct Page *page = le2page(le, page_link);
-        list_del(&(page->page_link));
-        free_area[order].nr_free--;
-        ClearPageProperty(page);
-        return page;
+    if (order >= MAX_ORDER) return NULL; // 请求的页面数超过最大阶数
+
+    if (free_area[order].nr_free > 0) { // 如果当前阶有空闲页面
+        list_entry_t *le = list_next(&(free_area[order].free_list));
+        struct Page *page = le2page(le, page_link); // 获取空闲页
+        list_del(&(page->page_link)); // 从空闲列表中删除
+        free_area[order].nr_free--; // 更新空闲页面计数
+        ClearPageProperty(page); // 清除页面属性
+        return page; // 返回分配的页面
     } else {
-        cut_page(order + 1);
-        list_entry_t* le = list_next(&(free_area[order].free_list));
-        struct Page *page = le2page(le, page_link);
-        list_del(&(page->page_link));
-        free_area[order].nr_free--;
-        ClearPageProperty(page);
-        return page;
+        cut_page(order + 1); // 切割页面以获取所需大小
+        return buddy_alloc_pages(n); // 递归调用以重新分配
     }
 }
 
-// 该函数参考了学长代码
-static void merge_page(uint32_t order, struct Page* base) {
-    if (order == MAX_ORDER) {
-        return;
-    }
+static void merge_page(size_t order, struct Page *base) {
+    if (order >= MAX_ORDER) return; // 超过最大阶数则返回
 
-    // 尝试合并前一个页面
-    list_entry_t* le = list_prev(&(base->page_link));
-    if (le!= &(free_area[order].free_list)) {
+    list_entry_t *le = list_prev(&(base->page_link));
+    if (le != &(free_area[order].free_list)) {
         struct Page *prev_page = le2page(le, page_link);
         if (prev_page + prev_page->property == base) {
-            prev_page->property += base->property;
-            ClearPageProperty(base);
-            list_del(&(base->page_link));
-            base = prev_page; // 更新 base 为合并后的页面
-            list_del(&(base->page_link));
-            if (free_area[order + 1].nr_free == 0) {
-                list_add(&(free_area[order + 1].free_list), &(base->page_link));
-                free_area[order + 1].nr_free++;
-            } else {
-                list_entry_t* le = &(free_area[order + 1].free_list);
-                while ((le = list_next(le))!= &(free_area[order + 1].free_list)) {
-                    struct Page* page = le2page(le, page_link);
-                    if (base < page) {
-                        list_add_before(le, &(base->page_link));
-                        free_area[order + 1].nr_free++;
-                        break;
-                    } else if (list_next(le) == &(free_area[order + 1].free_list)) {
-                        list_add(le, &(base->page_link));
-                        free_area[order + 1].nr_free++;
-                    }
-                }
-            }
+            prev_page->property += base->property; // 合并相邻的页面
+            ClearPageProperty(base); // 清除被合并页面的属性
+            list_del(&(base->page_link)); // 从空闲列表中删除
+            base = prev_page; // 更新基地址
+            list_del(&(base->page_link)); // 从空闲列表中删除
+            list_add(&(free_area[order + 1].free_list), &(base->page_link)); // 将合并后的页面加入空闲列表
+            free_area[order + 1].nr_free++; // 更新空闲页面计数
         }
     }
 
-    // 尝试合并后一个页面
     le = list_next(&(base->page_link));
-    if (le!= &(free_area[order].free_list)) {
+    if (le != &(free_area[order].free_list)) {
         struct Page *next_page = le2page(le, page_link);
         if (base + base->property == next_page) {
-            base->property += next_page->property;
-            ClearPageProperty(next_page);
-            list_del(&(next_page->page_link));
-            list_del(&(base->page_link));
-
-            if (free_area[order + 1].nr_free == 0) {
-                list_add(&(free_area[order + 1].free_list), &(base->page_link));
-                free_area[order + 1].nr_free++;
-            } else {
-                list_entry_t* le = &(free_area[order + 1].free_list);
-                while ((le = list_next(le))!= &(free_area[order + 1].free_list)) {
-                    struct Page* page = le2page(le, page_link);
-                    if (base < page) {
-                        list_add_before(le, &(base->page_link));
-                        free_area[order + 1].nr_free++;
-                        break;
-                    } else if (list_next(le) == &(free_area[order + 1].free_list)) {
-                        list_add(le, &(base->page_link));
-                        free_area[order + 1].nr_free++;
-                    }
-                }
-            }
+            base->property += next_page->property; // 合并相邻的页面
+            ClearPageProperty(next_page); // 清除被合并页面的属性
+            list_del(&(next_page->page_link)); // 从空闲列表中删除
+            list_del(&(base->page_link)); // 从空闲列表中删除
+            list_add(&(free_area[order + 1].free_list), &(base->page_link)); // 将合并后的页面加入空闲列表
+            free_area[order + 1].nr_free++; // 更新空闲页面计数
         }
     }
 
-    // 递归合并
-    merge_page(order + 1, base);
+    merge_page(order + 1, base); // 递归合并相邻页面
 }
 
 static void buddy_free_pages(struct Page *base, size_t n) {
     struct Page *p = base;
-    for (; p!= base + n; p++) {
-        // assert(!PageReserved(p) &&!PageProperty(p));
-        p->flags = 0;
-        set_page_ref(p, 0);
+    for (; p < base + n; p++) {
+        //assert(!PageReserved(p) && !PageProperty(p)); // 确保释放的页面是可用的
+        p->flags = 0; // 清除标志
+        set_page_ref(p, 0); // 设置引用计数为 0
     }
-    base->property = n;
-    SetPageProperty(base);
+    base->property = n; // 设置释放页面的属性
+    SetPageProperty(base); // 标记该页为页表
 
     size_t order = 0;
     while (n > 1) {
-        n >>= 1;
+        n >>= 1; // 计算阶数
         order++;
-        
     }
-    order++;
-    
+    order++; // 增加阶数
 
-    if (free_area[order].nr_free == 0) {
-        list_add(&(free_area[order].free_list), &(base->page_link));
-        free_area[order].nr_free++;
-    } else {
-        list_entry_t* le = &(free_area[order].free_list);
-        while ((le = list_next(le))!= &(free_area[order].free_list)) {
-            struct Page* page = le2page(le, page_link);
-            if (base < page) {
-                list_add_before(le, &(base->page_link));
-                free_area[order].nr_free++;
-                break;
-            } else if (list_next(le) == &(free_area[order].free_list)) {
-                list_add(le, &(base->page_link));
-                free_area[order].nr_free++;
-            }
-        }
-    }
+    list_entry_t *le = &(free_area[order].free_list);
+    list_add_before(le, &(base->page_link)); // 将释放的页面加入空闲列表
+    free_area[order].nr_free++; // 更新空闲页面计数
 
-    merge_page(order, base);
+    merge_page(order, base); // 合并相邻的空闲页面
 }
 
 static size_t buddy_nr_free_pages(void) {
-    size_t total = 0; // 使用 size_t 以处理较大的总和
-    for (int i = 0; i <= MAX_ORDER-1; i++) {
-        // 使用 size_t 进行位移操作，避免潜在的溢出
-        total += (size_t)(free_area[i].nr_free) << i;
+    size_t total = 0;
+    for (int i = 0; i < MAX_ORDER; i++) {
+        total += (size_t)(free_area[i].nr_free) << i; // 计算总的空闲页面数
     }
-    return total;
+    return total; // 返回总的空闲页面数
 }
-
 
 static void buddy_check(void) {
     int total_free_pages = 0;
@@ -242,43 +181,35 @@ static void buddy_check(void) {
     }
 
     // 可以添加更多的检查逻辑，例如检查每个页面的引用计数
-    cprintf("总空闲块数目为：%d\n", buddy_nr_free_pages());
-    for(int i=0;i<MAX_ORDER;i++){
-    size_t total =free_area[i].nr_free;
-    
-    cprintf("%d ",total);
+    cprintf("总空闲块数目为：%d\n", buddy_nr_free_pages()); // 输出空闲块数
+    for (int i = 0; i < MAX_ORDER; i++) {
+        cprintf("%d ", free_area[i].nr_free); // 输出每个阶的空闲块数
     }
     
+    // 请求页面示例
     struct Page *p0, *p1, *p2;
     p0 = p1 = p2 = NULL;
 
     cprintf("\n首先 p0 请求 5 页\n");
     p0 = buddy_alloc_pages(5);
     
-    for(int i=0;i<MAX_ORDER;i++){
-    size_t total =free_area[i].nr_free;
-    
-    cprintf("%d ",total);
+    for (int i = 0; i < MAX_ORDER; i++) {
+        cprintf("%d ", free_area[i].nr_free);
     }
     
     cprintf("\n然后 p1 请求 5 页\n");
     p1 = buddy_alloc_pages(5);
     
-    for(int i=0;i<MAX_ORDER;i++){
-    size_t total =free_area[i].nr_free;
-    
-    cprintf("%d ",total);
+    for (int i = 0; i < MAX_ORDER; i++) {
+        cprintf("%d ", free_area[i].nr_free);
     }
     
     cprintf("\n最后 p2 请求 1023页\n");
     p2 = buddy_alloc_pages(1023);
     
-    for(int i=0;i<MAX_ORDER;i++){
-    size_t total =free_area[i].nr_free;
-    
-    cprintf("%d ",total);
+    for (int i = 0; i < MAX_ORDER; i++) {
+        cprintf("%d ", free_area[i].nr_free);
     }
-    
     
     cprintf("\n p0 的虚拟地址 0x%016lx.\n", p0);
     cprintf("\n p1 的虚拟地址 0x%016lx.\n", p1);
@@ -287,33 +218,24 @@ static void buddy_check(void) {
     
     cprintf("\n 收回p0\n");
     buddy_free_pages(p0,5);
-    for(int i=0;i<MAX_ORDER;i++){
-    size_t total =free_area[i].nr_free;
-    
-    cprintf("%d ",total);
+    for (int i = 0; i < MAX_ORDER; i++) {
+        cprintf("%d ", free_area[i].nr_free);
     }
     
     cprintf("\n 收回p1\n");
     buddy_free_pages(p1,5);
-    for(int i=0;i<MAX_ORDER;i++){
-    size_t total =free_area[i].nr_free;
-    
-    cprintf("%d ",total);
+    for (int i = 0; i < MAX_ORDER; i++) {
+        cprintf("%d ", free_area[i].nr_free);
     }
     
     cprintf("\n 收回p2\n");
     buddy_free_pages(p2,1023);
-    for(int i=0;i<MAX_ORDER;i++){
-    size_t total =free_area[i].nr_free;
-    
-    cprintf("%d ",total);
+    for (int i = 0; i < MAX_ORDER; i++) {
+        cprintf("%d ", free_area[i].nr_free);
     }
     
     cprintf("\n");
-    
-    
 }
-
 
 const struct pmm_manager buddy_system_pmm_manager = {
    .name = "buddy_system_pmm_manager",
