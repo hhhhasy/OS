@@ -1,6 +1,7 @@
 #include <pmm.h>
 #include <list.h>
 #include <string.h>
+#include <buddy_system.h>
 #include <stdio.h>
 #include <assert.h>
 
@@ -314,8 +315,8 @@ static void buddy_check(void) {
 }
 
 
-const struct pmm_manager buddy_pmm_manager = {
-   .name = "buddy_pmm_manager",
+const struct pmm_manager buddy_system_pmm_manager = {
+   .name = "buddy_system_pmm_manager",
    .init = buddy_init,
    .init_memmap = buddy_init_memmap,
    .alloc_pages = buddy_alloc_pages,

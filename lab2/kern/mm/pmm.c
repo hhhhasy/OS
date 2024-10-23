@@ -35,8 +35,8 @@ static void check_alloc_page(void);
 
 // init_pmm_manager - initialize a pmm_manager instance
 static void init_pmm_manager(void) {
-    pmm_manager = &best_fit_pmm_manager;//在此更换页面管理函数指针
-    //pmm_manager = &buddy_system_pmm_manager;
+    //pmm_manager = &best_fit_pmm_manager; // 修改此处：测试 Best-Fit 算法
+    pmm_manager = &buddy_system_pmm_manager; // 修改此处：测试 Buddy System 算法
     cprintf("memory management: %s\n", pmm_manager->name);
     pmm_manager->init();
 }
