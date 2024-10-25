@@ -145,9 +145,9 @@ static void init_pmm_manager(void) {
 }
 ```
 
-### Best-Fit算法的进一步改进空间
+### Best-Fit 算法的进一步改进空间
 
-正如我们上述实现的那样，在找到最优的分配页框的时候，我们需要对空闲页链表 `free_list`的所有页框进行遍历，从而满足要求的空闲页框，因此分配效率上会有失偏颇；并且，与First Fit相同的是，Best Fit算法仍然会产生一些更加难以利用的较小的内存碎片。
+正如我们上述实现的那样，在找到最优的分配页框的时候，我们需要对空闲页链表 `free_list` 的所有页框进行遍历，从而满足要求的空闲页框，因此分配效率上会有失偏颇；并且，与 First Fit 相同的是，Best Fit 算法仍然会产生一些更加难以利用的较小的内存碎片。
 
 1. **性能优化**：
    - 当前实现每次分配都需要遍历整个空闲链表，时间复杂度为 O(n)。
@@ -172,65 +172,220 @@ static void init_pmm_manager(void) {
 >
 > - 参考 [伙伴分配器的一个极简实现](http://coolshell.cn/articles/10427.html)， 在 ucore 中实现 buddy system 分配算法，要求有比较充分的测试用例说明实现的正确性，需要有设计文档。
 
-### 解答
+### Buddy System 分配算法设计文档
 
-##### **数据结构**
+#### 1. 设计目标
 
-- **`free_area`**: 一个长度为 `MAX_ORDER` 的数组，每个元素是一个双向链表，用于管理不同阶数的空闲内存块。
+实现一个基于 Buddy System 的内存分配算法，用于管理 ucore 操作系统中的物理内存。该算法应能高效地分配和释放内存，同时最小化内存碎片。
 
-##### **初始化**
+#### 2. 算法概述
 
-在初始化页表时，根据系统的内存大小将页面分配到对应的链表中：
+Buddy System 将可用内存划分为大小为 2 的幂次方的块。当需要分配内存时，系统会找到满足需求的最小的 2 的幂次方大小的块。如果没有恰好大小的块，就会将更大的块分割成两个相等的小块，直到得到合适大小的块。释放内存时，系统会尝试合并相邻的空闲块，以形成更大的连续空闲内存。
 
-1. 遍历内存块，根据其大小计算对应的阶数。
+#### 3. 数据结构设计
 
-2. 将每个页面的属性和标志位清零，并将其加入对应的链表。
+```c
+#define MAX_ORDER 11  // 支持最大 2^10 = 1024 页的分配
 
-3. 更新链表的空闲页面计数。
+typedef struct {
+    list_entry_t free_list;  // 空闲页面链表
+    unsigned int nr_free;    // 空闲页面数量
+} free_area_t;
 
+static free_area_t free_area[MAX_ORDER];  // 每个阶数对应一个空闲链表
+```
 
-##### 内存分配
+- 使用 11 个链表来管理不同大小的内存块，支持最大 1024 页的分配。
+- 每个 `free_area_t` 结构包含一个空闲页面链表和该大小的空闲页面数量。
 
-##### 在分配内存时
+#### 4. 主要函数设计
 
-1. **计算阶数**: 首先计算所需内存块的阶数。
+##### 4.1 初始化函数
 
-2. 检查链表
+```c
+static void buddy_init(void)
+static void buddy_init_memmap(struct Page *base, size_t n)
+```
 
-   : 查看对应阶数的链表是否为空。
+- `buddy_init`: 初始化 Buddy System 的数据结构。
+- `buddy_init_memmap`: 初始化给定范围的物理内存页面。
 
-   - **非空**: 从链表中取出一个页面块进行分配。
+##### 4.2 内存分配函数
 
-   - 为空
+```c
+static struct Page *buddy_alloc_pages(size_t n)
+```
 
-     : 开始分割更大阶数的页块。
+- 根据请求的页面数量 `n`，找到合适的内存块。
+- 如果没有恰好大小的块，则分割更大的块。
 
-     - 遍历阶数比当前阶数大的链表，找到一个非空的链表，从中取出一个页面块。
+##### 4.3 内存释放函数
 
-     - 将页面块一分为二，分别放入当前阶数对应的链表中。
+```c
+static void buddy_free_pages(struct Page *base, size_t n)
+```
 
-     - 如果所有更高阶数的链表均为空，递归执行分割页面算法，直到找到可用的页块。
+- 释放从 `base` 开始的 `n` 个页面。
+- 尝试合并相邻的空闲块。
 
+##### 4.4 辅助函数
 
-##### **内存释放**
+```c
+static void cut_page(size_t n)
+static void merge_page(size_t order, struct Page *base)
+```
 
-在释放内存时：
+- `cut_page`: 用于分割大内存块为小块。
+- `merge_page`: 用于合并相邻的空闲块。
 
-1. 将页块放入对应的链表中。
+##### 4.5 其他功能函数
 
-2. 检查前一个和后一个页面块是否可以合并成一个更大的页面块。
+```c
+static size_t buddy_nr_free_pages(void)
+static void buddy_check(void)
+```
 
-   - 如果可以合并，更新合并后的页面属性，并从链表中移除被合并的页面。
+- `buddy_nr_free_pages`: 计算总的空闲页面数。
+- `buddy_check`: 用于测试和验证 Buddy System 的正确性。
 
-   - 递归检查是否可以继续向更高阶数的链表合并。
+#### 5. 算法实现细节
 
+##### 5.1 内存分配过程
 
-##### **合并逻辑**
+1. 计算所需的阶数（order）。
+2. 如果当前阶有空闲页面，直接分配。
+3. 否则，从更高阶分割页面，然后重新尝试分配。
 
-- 在合并过程中，首先检查当前页面块的前后相邻页面块。
-- 若相邻页面块可以合并，则更新合并后的页面块的属性，并将其插入到更高阶数的链表中。
+```c
+static struct Page *buddy_alloc_pages(size_t n) {
+    assert(n > 0);
+    size_t order = 0;
 
-**检测函数**
+    while ((1 << order) < n) {
+        order++; // 计算所需的阶数
+    }
+
+    if (order >= MAX_ORDER) return NULL; // 请求的页面数超过最大阶数
+
+    if (free_area[order].nr_free > 0) { // 如果当前阶有空闲页面
+        list_entry_t *le = list_next(&(free_area[order].free_list));
+        struct Page *page = le2page(le, page_link); // 获取空闲页
+        list_del(&(page->page_link)); // 从空闲列表中删除
+        free_area[order].nr_free--; // 更新空闲页面计数
+        ClearPageProperty(page); // 清除页面属性
+        return page; // 返回分配的页面
+    } else {
+        cut_page(order + 1); // 切割页面以获取所需大小
+        return buddy_alloc_pages(n); // 递归调用以重新分配
+    }
+}
+```
+
+##### 5.2 内存释放过程
+
+1. 将释放的页面标记为空闲。
+2. 将页面添加到对应阶的空闲列表。
+3. 尝试与相邻的空闲页面合并，形成更大的块。
+
+```c
+static void buddy_free_pages(struct Page *base, size_t n) {
+    struct Page *p = base;
+    for (; p < base + n; p++) {
+        //assert(!PageReserved(p) && !PageProperty(p)); // 确保释放的页面是可用的
+        p->flags = 0; // 清除标志
+        set_page_ref(p, 0); // 设置引用计数为 0
+    }
+    base->property = n; // 设置释放页面的属性
+    SetPageProperty(base); // 标记该页为页表
+
+    size_t order = 0;
+    while (n > 1) {
+        n >>= 1; // 计算阶数
+        order++;
+    }
+    order++; // 增加阶数
+
+    list_entry_t *le = &(free_area[order].free_list);
+    list_add_before(le, &(base->page_link)); // 将释放的页面加入空闲列表
+    free_area[order].nr_free++; // 更新空闲页面计数
+
+    merge_page(order, base); // 合并相邻的空闲页面
+}
+```
+
+##### 5.3 页面分割和合并
+
+- 分割：将高阶页面分成两个低一阶的页面。
+
+```c
+static void cut_page(size_t n) {
+    while (n < MAX_ORDER && free_area[n].nr_free == 0) {
+        n++; // 查找下一个有空闲页面的阶
+    }
+    if (n == MAX_ORDER) return; // 如果没有可用的阶，则返回
+
+    list_entry_t *le = list_next(&(free_area[n].free_list));
+    struct Page *page = le2page(le, page_link); // 获取空闲页
+    list_del(&(page->page_link)); // 从空闲列表中删除
+    free_area[n].nr_free--; // 更新空闲页面计数
+
+    size_t i = n - 1; // 减小阶数
+    struct Page *buddy_page = page + (1 << i); // 计算伙伴页的地址
+    buddy_page->property = (1 << i); // 设置伙伴页的属性
+    page->property = (1 << i); // 设置当前页的属性
+    SetPageProperty(buddy_page); // 标记伙伴页
+
+    list_add(&(free_area[i].free_list), &(page->page_link)); // 将当前页加入到较小阶的空闲列表
+    list_add(&(buddy_page->page_link), &(free_area[i].free_list)); // 将伙伴页加入到空闲列表
+    free_area[i].nr_free += 2; // 更新空闲页面计数
+}
+```
+
+- 合并：检查相邻的伙伴页面是否空闲，如果是则合并。
+
+```c
+static void merge_page(size_t order, struct Page *base) {
+    if (order >= MAX_ORDER) return; // 超过最大阶数则返回
+
+    list_entry_t *le = list_prev(&(base->page_link));
+    if (le != &(free_area[order].free_list)) {
+        struct Page *prev_page = le2page(le, page_link);
+        if (prev_page + prev_page->property == base) {
+            prev_page->property += base->property; // 合并相邻的页面
+            ClearPageProperty(base); // 清除被合并页面的属性
+            list_del(&(base->page_link)); // 从空闲列表中删除
+            base = prev_page; // 更新基地址
+            list_del(&(base->page_link)); // 从空闲列表中删除
+            list_add(&(free_area[order + 1].free_list), &(base->page_link)); // 将合并后的页面加入空闲列表
+            free_area[order + 1].nr_free++; // 更新空闲页面计数
+        }
+    }
+
+    le = list_next(&(base->page_link));
+    if (le != &(free_area[order].free_list)) {
+        struct Page *next_page = le2page(le, page_link);
+        if (base + base->property == next_page) {
+            base->property += next_page->property; // 合并相邻的页面
+            ClearPageProperty(next_page); // 清除被合并页面的属性
+            list_del(&(next_page->page_link)); // 从空闲列表中删除
+            list_del(&(base->page_link)); // 从空闲列表中删除
+            list_add(&(free_area[order + 1].free_list), &(base->page_link)); // 将合并后的页面加入空闲列表
+            free_area[order + 1].nr_free++; // 更新空闲页面计数
+        }
+    }
+
+    merge_page(order + 1, base); // 递归合并相邻页面
+}
+```
+
+#### 6. 测试用例
+
+在 `buddy_check` 函数中实现了以下测试：
+
+1. 检查每个阶的空闲页面数量是否正确。
+2. 验证总的空闲页面数。
+3. 分配不同大小的内存块，并验证分配结果。
+4. 释放分配的内存，检查是否正确合并。
 
 ```c
 static void buddy_check(void) {
@@ -262,39 +417,35 @@ static void buddy_check(void) {
     }
 
     // 可以添加更多的检查逻辑，例如检查每个页面的引用计数
-    cprintf("总空闲块数目为：%d\n", buddy_nr_free_pages());
-    for(int i=0;i<MAX_ORDER;i++){
-       size_t total =free_area[i].nr_free;
-       cprintf("%d ",total);
+    cprintf("总空闲块数目为：%d\n", buddy_nr_free_pages()); // 输出空闲块数
+    for (int i = 0; i < MAX_ORDER; i++) {
+        cprintf("%d ", free_area[i].nr_free); // 输出每个阶的空闲块数
     }
     
+    // 请求页面示例
     struct Page *p0, *p1, *p2;
     p0 = p1 = p2 = NULL;
 
     cprintf("\n首先 p0 请求 5 页\n");
     p0 = buddy_alloc_pages(5);
     
-    for(int i=0;i<MAX_ORDER;i++){
-       size_t total =free_area[i].nr_free;
-       cprintf("%d ",total);
+    for (int i = 0; i < MAX_ORDER; i++) {
+        cprintf("%d ", free_area[i].nr_free);
     }
     
     cprintf("\n然后 p1 请求 5 页\n");
     p1 = buddy_alloc_pages(5);
     
-    for(int i=0;i<MAX_ORDER;i++){
-       size_t total =free_area[i].nr_free;
-       cprintf("%d ",total);
+    for (int i = 0; i < MAX_ORDER; i++) {
+        cprintf("%d ", free_area[i].nr_free);
     }
     
     cprintf("\n最后 p2 请求 1023页\n");
     p2 = buddy_alloc_pages(1023);
     
-    for(int i=0;i<MAX_ORDER;i++){
-       size_t total =free_area[i].nr_free;
-       cprintf("%d ",total);
+    for (int i = 0; i < MAX_ORDER; i++) {
+        cprintf("%d ", free_area[i].nr_free);
     }
-    
     
     cprintf("\n p0 的虚拟地址 0x%016lx.\n", p0);
     cprintf("\n p1 的虚拟地址 0x%016lx.\n", p1);
@@ -303,31 +454,45 @@ static void buddy_check(void) {
     
     cprintf("\n 收回p0\n");
     buddy_free_pages(p0,5);
-    for(int i=0;i<MAX_ORDER;i++){
-       size_t total =free_area[i].nr_free;
-       cprintf("%d ",total);
+    for (int i = 0; i < MAX_ORDER; i++) {
+        cprintf("%d ", free_area[i].nr_free);
     }
     
     cprintf("\n 收回p1\n");
     buddy_free_pages(p1,5);
-    for(int i=0;i<MAX_ORDER;i++){
-       size_t total =free_area[i].nr_free;
-       cprintf("%d ",total);
+    for (int i = 0; i < MAX_ORDER; i++) {
+        cprintf("%d ", free_area[i].nr_free);
     }
     
     cprintf("\n 收回p2\n");
     buddy_free_pages(p2,1023);
-    for(int i=0;i<MAX_ORDER;i++){
-       size_t total =free_area[i].nr_free;
-       cprintf("%d ",total);
+    for (int i = 0; i < MAX_ORDER; i++) {
+        cprintf("%d ", free_area[i].nr_free);
     }
     
-    cprintf("\n");    
+    cprintf("\n");
 }
-
 ```
 
-![osubuntu-2024-10-22-14-10-34](C:\Users\HP\Desktop\osubuntu-2024-10-22-14-10-34.png)
+运行 `make qemu` 后，出现 `check_alloc_page() succeeded!`, 表明 Buddy System 内存分配算法的实现基本正确！
+
+#### 7. 性能分析
+
+- 时间复杂度：
+  - 分配和释放操作的平均时间复杂度为 O(log n)，其中 n 是系统中的总页面数。
+- 空间效率：
+  - Buddy System 可能会导致内部碎片，但通过使用多个大小的块，可以减少这种情况。
+
+#### 8. 潜在的改进空间
+
+1. 实现更复杂的分配策略，如考虑内存局部性。
+2. 优化数据结构，使用更高效的搜索算法（如平衡树）来查找空闲块。
+3. 实现内存压缩算法，定期整理内存以减少外部碎片。
+4. 添加更多的错误处理和边界检查，提高系统的稳定性。
+
+#### 9. 结论
+
+本实现提供了一个基本但功能完整的 Buddy System 内存分配器。它能够有效地管理物理内存，支持动态分配和释放，并通过伙伴系统的特性减少内存碎片。通过详细的测试用例，我们验证了算法的正确性和有效性。
 
 ## 扩展练习 Challenge：任意大小的内存单元 slub 分配算法（需要编程）
 
@@ -355,11 +520,11 @@ static void buddy_check(void) {
 
 1. 通过 BIOS 或 UEFI 获取内存信息
 
-   在系统启动过程中，操作系统可以通过与系统固件如常见的BIOS或者是OPENSBI进行交互，获的可用的物理内存信息。这通常是在通电以后在引导加载程序阶段完成的。具体来说的话就是操作系统可以使用 BIOS 中断 `INT 0x15`，特别是函数 `E820h`，来获取内存布局。此调用返回内存范围列表，包括可用的、保留的以及其他特定用途的内存区域。
+   在系统启动过程中，操作系统可以通过与系统固件如常见的 BIOS 或者是 OPENSBI 进行交互，获的可用的物理内存信息。这通常是在通电以后在引导加载程序阶段完成的。具体来说的话就是操作系统可以使用 BIOS 中断 `INT 0x15`，特别是函数 `E820h`，来获取内存布局。此调用返回内存范围列表，包括可用的、保留的以及其他特定用途的内存区域。
 
 2. 使用内存映射寄存器
 
-   操作系统可以通过读取内存映射寄存器来获取内存信息。它是由固件生成的，包含有关系统硬件、内存布局等的信息。具体来说的话操作系统可以读取内存映射寄存器中的 SRAT或 SPCR表。这些表提供关于内存范围的描述，以及内存是可用的还是用于其他目的。
+   操作系统可以通过读取内存映射寄存器来获取内存信息。它是由固件生成的，包含有关系统硬件、内存布局等的信息。具体来说的话操作系统可以读取内存映射寄存器中的 SRAT 或 SPCR 表。这些表提供关于内存范围的描述，以及内存是可用的还是用于其他目的。
 
 3. 内存探测
 
