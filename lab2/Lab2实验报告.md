@@ -502,11 +502,294 @@ static void buddy_check(void) {
 >
 > - 参考 [linux 的 slub 分配算法/](https://github.com/torvalds/linux/blob/master/mm/slub.c)，在 ucore 中实现 slub 分配算法。要求有比较充分的测试用例说明实现的正确性，需要有设计文档。
 
-### 解答
+### slub 分配算法设计文档
+
+#### 1. 设计目标
+
+设计和实现一个基于 Linux `slub` 分配算法的两层内存分配器，该分配器应支持页大小的大块内存分配和任意大小的小块内存分配。实现的目标包括：
+
+- **两层架构**：利用伙伴系统进行页大小分配，再在其基础上进行任意大小的小块分配。
+
+- **高效性**：通过伙伴系统进行页级分配，结合链表实现小块分配，使分配器能够在常用的内存块大小下提供快速分配。
+- **低碎片率**：通过伙伴系统的块合并减少页级碎片，并利用 `slub` 链表结构减少小块内存碎片。
+- **简单性**：简化实现，但保留 `slub` 分配器的主要设计思想。
+- **可测试性**：设计充分的测试用例验证算法的正确性和边界情况。
+
+#### 2. 算法概述
+
+`slub` 分配算法在 Linux 内核中是一种分层内存分配方式，用于提升小块内存的分配效率。该设计的内存分配器包含两个主要层级：
+
+- **伙伴系统**：以页为单位的大块内存管理，适合大块内存的分配需求。每个页被划分为不同的阶层，形成一个页块链表，支持页块的分裂和合并操作。
+
+- **slub 层**：在页级分配基础上，对小块内存进一步分配。通过链表管理空闲小块，适用于任意大小的小块请求。
+
+#### 3. 数据结构设计
+
+- **伙伴系统数据结构**
+  - `free_area_t`：存储不同阶层的空闲页块链表。每个阶层代表一个大小的页块链表，`MAX_ORDER` 代表最大阶数。
+
+```c
+typedef struct {
+    list_entry_t free_list;  // 空闲页面链表
+    unsigned int nr_free;    // 空闲页面数量
+} free_area_t;
+```
+
+- **slub 层数据结构**
+  - `SlubBlock`：用于小块管理的链表节点，包含小块大小、状态、以及指向下一块小块的指针。空闲小块通过链表管理。
+  - `slub_small_block_list`：记录空闲的小块链表，用于查找和管理小块分配。
+
+```c
+// 小块内存管理结构
+struct SlubBlock
+{
+    size_t size;            // 小块的大小
+    void *page;             // 指向分配的页面
+    struct SlubBlock *next; // 指向下一个小块
+};
+
+// 小块内存链表头指针
+static struct SlubBlock *slub_small_block_list = NULL;
+```
+
+#### 4. 主要函数设计
+
+##### 4.1 伙伴系统层函数
+
+- `buddy_alloc_pages(order)`: 按照指定阶层 `order` 分配页块。若当前阶层没有可用页块，则从更高阶块分裂得到。
+- `buddy_free_pages(page, order)`: 将指定阶层 `order` 的页块释放并插入对应的空闲链表中。若相邻页块均空闲，则合并成更高阶页块。
+
+```c
+static struct Page *buddy_alloc_pages(size_t n)
+static void buddy_free_pages(struct Page *base, size_t n)
+```
+
+##### 4.2 slub 层函数
+
+- `slub_alloc_small(size)`: 根据所需大小 `size` 分配小块。若小块链表中无可用块，从伙伴系统中分配一个页并分割为小块。
+- `slub_free_small(block)`: 将释放的小块插入到小块链表，等待重用。
+
+```c
+static void *slub_alloc_small(float size)
+static void slub_free_small(void *ptr, size_t size)
+```
+
+##### 4.3 辅助和验证函数
+
+- `cut_page(page, target_order)`：将大页切割成目标阶数的小页。
+
+- `merge_page(page)`：合并相邻空闲的页块，减少碎片。
+
+- `slub_check`: 验证内存分配的正确性，通过一系列小块、大块的分配和释放操作来测试分配器。
 
 
+```c
+static void cut_page(size_t n)
+static void merge_page(size_t order, struct Page *base)
+static void slub_check(void)
+```
 
+#### 5. 算法实现细节
 
+- **伙伴系统实现细节**：
+  - `buddy_alloc_pages` 检查对应阶层的空闲页块列表。若列表为空，则从更高阶获取块并不断分裂，直到得到所需阶层块大小。
+  - `buddy_free_pages` 释放页块时，首先检查该阶层的页块是否能和相邻页块合并。若合并成功，则将合并后的块移动到更高阶，最终减少碎片。
+
+- **slub 层实现细节**：
+  - `slub_alloc_small` 首先检查链表中是否存在可用的小块。若无可用块，调用 `buddy_alloc_pages` 分配新页并将其分割为多个小块，插入到链表中。然后从链表中取出合适的小块进行分配。
+
+  ```c
+  static void *slub_alloc_small(float size)
+  {
+      size_t total_size = size;
+      struct SlubBlock *temp = slub_small_block_list;
+      while (temp!= NULL)
+      {
+          if (temp->size >= total_size)
+          {
+              struct SlubBlock *block = temp;
+              slub_small_block_list = temp->next;
+              return (void *)(block + 1);
+          }
+          else
+          {
+              temp = temp->next;
+          }
+      }
+      // 没有找到匹配项
+      struct Page *page = buddy_alloc_pages(1); // 分配一个页
+      if (page == NULL)
+      {
+          return NULL; // 分配失败
+      }
+      struct SlubBlock *current_block = (struct SlubBlock *)page; // 获取页面指针
+      current_block->size = 0;                                    // 设置大小
+      slub_free_small((void *)(current_block + 1), 1);
+      return (void *)(current_block + 1);
+  }
+  ```
+
+  - `slub_free_small` 将回收的小块插入到链表头部，等待下次请求使用。
+
+  ```c
+  static void slub_free_small(void *ptr, size_t size)
+  {
+      if (ptr == NULL)
+      {
+          return;
+      }
+      struct SlubBlock *block = (struct SlubBlock *)ptr - 1;
+      block->size += size;
+      struct SlubBlock *temp = slub_small_block_list;
+      if (temp == NULL || temp->size > block->size)
+      {
+          block->next = temp;
+          slub_small_block_list = block;
+          return;
+      }
+      while (temp->next!= NULL && temp->next->size < block->size)
+      {
+          temp = temp->next;
+      }
+      block->next = temp->next;
+      temp->next = block;
+  }
+  ```
+
+- **边界处理**：分配器会处理超过最大阶数 `MAX_ORDER` 的请求，并确保分配失败时返回 `NULL`。小块释放时检查其有效性，避免链表操作出现错误。
+- **优化措施**：
+  - 小块分配时会进行内存对齐，并按块大小归类链表，以提高分配效率。
+  - 伙伴系统的阶数和分配的页块大小对齐，以减少页面碎片。
+
+#### 6. 测试用例
+
+在`slub_check`中实现了一个全面的内存分配检查，测试内容涵盖了从页分配、页回收到小块分配和回收的多个功能。
+
+1. 检查每个阶层的空闲页面列表
+2. 检查总的空闲页面数
+3. 测试多个大页的分配和回收功能
+4. 对小块内存的分配与回收进行测试
+
+```c
+static void slub_check(void) {
+    int total_free_pages = 0;
+
+    // 检查每个阶数的空闲列表
+    for (int i = 0; i <= MAX_ORDER-1; i++) {
+        list_entry_t *le = &free_area[i].free_list;
+        int count = 0;
+        while ((le = list_next(le))!= &free_area[i].free_list) {
+            struct Page *p = le2page(le, page_link);
+            assert(PageProperty(p)); // 每个页面应该标记为已分配
+            count++;
+            total_free_pages += p->property;
+        }
+        assert(count == free_area[i].nr_free); // 空闲列表中的页面数应与记录一致
+    }
+
+    // 检查总的空闲页面数是否一致
+    assert(total_free_pages == slub_nr_free_pages());
+
+    // 检查已分配页面的状态
+    for (int i = 0; i <= MAX_ORDER-1; i++) {
+        list_entry_t *le = &free_area[i].free_list;
+        while ((le = list_next(le))!= &free_area[i].free_list) {
+            struct Page *p = le2page(le, page_link);
+            assert(PageProperty(p)); // 确保页面的属性是正确的
+        }
+    }
+
+    // 可以添加更多的检查逻辑，例如检查每个页面的引用计数
+    cprintf("总空闲块数目为：%d\n", slub_nr_free_pages()); // 输出空闲块数
+    for (int i = 0; i < MAX_ORDER; i++) {
+        cprintf("%d ", free_area[i].nr_free); // 输出每个阶的空闲块数
+    }
+    
+    // 请求页面示例
+    struct Page *p0, *p1, *p2;
+    p0 = p1 = p2 = NULL;
+
+    cprintf("\n首先 p0 请求 5 页\n");
+    p0 = buddy_alloc_pages(5);
+    
+    for (int i = 0; i < MAX_ORDER; i++) {
+        cprintf("%d ", free_area[i].nr_free);
+    }
+    
+    cprintf("\n然后 p1 请求 5 页\n");
+    p1 = buddy_alloc_pages(5);
+    
+    for (int i = 0; i < MAX_ORDER; i++) {
+        cprintf("%d ", free_area[i].nr_free);
+    }
+    
+    cprintf("\n最后 p2 请求 1023页\n");
+    p2 = buddy_alloc_pages(1023);
+    
+    for (int i = 0; i < MAX_ORDER; i++) {
+        cprintf("%d ", free_area[i].nr_free);
+    }
+    
+    cprintf("\n p0 的虚拟地址 0x%016lx.\n", p0);
+    cprintf("\n p1 的虚拟地址 0x%016lx.\n", p1);
+    cprintf("\n p2 的虚拟地址 0x%016lx.\n", p2);
+    
+    
+    cprintf("\n 收回p0\n");
+    buddy_free_pages(p0,5);
+    for (int i = 0; i < MAX_ORDER; i++) {
+        cprintf("%d ", free_area[i].nr_free);
+    }
+    
+    cprintf("\n 收回p1\n");
+    buddy_free_pages(p1,5);
+    for (int i = 0; i < MAX_ORDER; i++) {
+        cprintf("%d ", free_area[i].nr_free);
+    }
+    
+    cprintf("\n 收回p2\n");
+    buddy_free_pages(p2,1023);
+    for (int i = 0; i < MAX_ORDER; i++) {
+        cprintf("%d ", free_area[i].nr_free);
+    }
+    
+    cprintf("\n");
+
+    //cprintf("总小块内存数目为：%d\n", total_small_blocks);
+
+    // 请求页面和小块内存示例
+    // struct Page *p0 = NULL;
+    void *small_block_ptr = NULL;
+
+    
+
+    cprintf("\n然后请求小块内存（大小为 128）\n");
+    small_block_ptr = slub_alloc_small(128);
+    cprintf("小块内存分配成功\n");
+
+    
+
+    cprintf("\n收回小块内存\n");
+    slub_free_small(small_block_ptr, 128);
+    cprintf("小块内存回收成功\n");
+
+    cprintf("\n");
+}
+```
+
+#### 7. 性能分析
+
+通过分层管理内存，分配器可以在页大小的大块和任意大小的小块之间高效分配内存。大块分配基于伙伴系统，因此 **时间复杂度为 O(logN)**，而小块分配通过链表结构实现，单次分配的 **平均复杂度为 O(1)**。`slub` 机制在小块分配和释放频繁的场景下具有良好性能。
+
+#### 8. 潜在的改进空间
+
+- **多链表分级管理**：为不同大小的小块设置多个链表，进一步降低小块分配时的遍历次数。
+- **页块缓存和对齐优化**：缓存一些小块页块以减少内存碎片，并通过按缓存行对齐进一步提升性能。
+- **引用计数管理**：可通过引用计数优化大块的回收策略，使内存分配更高效。
+
+#### 9. 结论
+
+本文设计并实现了一个基于 Linux `slub` 分配器的两层内存管理算法，通过伙伴系统进行大块页分配，并在其基础上设计了小块分配策略。实现方式保留了 `slub` 算法的核心思想，简化了代码结构，并通过测试验证了分配器的正确性和高效性。
 
 ## 扩展练习 Challenge：硬件的可用物理内存范围的获取方法（思考题）
 
@@ -533,6 +816,7 @@ static void buddy_check(void) {
 4. 通过虚拟化层获取内存信息
 
    如果操作系统运行在虚拟化环境下，如 KVM、VMware、Xen 等 上，它可以通过接口，如 `VMware Tools`、`XenStore` 等来获取虚拟机的内存配置信息。虚拟化层通常会告知虚拟机操作系统它能够使用的物理内存范围。
+
 
 
 

@@ -1,6 +1,7 @@
 #include <default_pmm.h>
 #include <best_fit_pmm.h>
 #include <buddy_system.h>
+#include <slub_pmm.h>
 #include <defs.h>
 #include <error.h>
 #include <memlayout.h>
@@ -36,7 +37,8 @@ static void check_alloc_page(void);
 // init_pmm_manager - initialize a pmm_manager instance
 static void init_pmm_manager(void) {
     //pmm_manager = &best_fit_pmm_manager; // 修改此处：测试 Best-Fit 算法
-    pmm_manager = &buddy_system_pmm_manager; // 修改此处：测试 Buddy System 算法
+    //pmm_manager = &buddy_system_pmm_manager; // 修改此处：测试 Buddy System 算法
+    pmm_manager = &slub_pmm_manager; // 修改此处：测试 slub 算法
     cprintf("memory management: %s\n", pmm_manager->name);
     pmm_manager->init();
 }

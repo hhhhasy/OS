@@ -1,6 +1,7 @@
 #include <pmm.h>
 #include <list.h>
 #include <string.h>
+#include <slub_pmm.h>
 #include <stdio.h>
 #include <assert.h>
 
@@ -283,6 +284,7 @@ static void slub_free(struct Page *ptr, size_t size)
         slub_free_small(ptr, size);
     }
 }
+
 static void slub_check(void) {
     int total_free_pages = 0;
 
@@ -387,6 +389,7 @@ static void slub_check(void) {
 
     cprintf("\n");
 }
+
 const struct pmm_manager slub_pmm_manager = {
     .name = "slub_pmm_manager",
     .init = slub_init,
