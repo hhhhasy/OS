@@ -1,7 +1,6 @@
 #include <pmm.h>
 #include <list.h>
 #include <string.h>
-#include <slub_pmm.h>
 #include <stdio.h>
 #include <assert.h>
 
@@ -11,7 +10,7 @@ static free_area_t free_area[MAX_ORDER]; // 每个阶数一个空闲列表
 // 小块内存管理结构
 struct SlubBlock
 {
-    size_t size;            // 小块的大小
+    size_t size;            // 小块大小
     void *page;             // 指向分配的页面
     struct SlubBlock *next; // 指向下一个小块
 };
@@ -195,7 +194,7 @@ static void slub_init_small_blocks()
     slub_small_block_list = NULL;
 }
 
-// 释放小块内存
+// 释放小块
 static void slub_free_small(void *ptr, size_t size)
 {
     if (ptr == NULL)
@@ -203,7 +202,7 @@ static void slub_free_small(void *ptr, size_t size)
         return;
     }
     struct SlubBlock *block = (struct SlubBlock *)ptr - 1;
-    block->size += size;
+    block->size += size * PGSIZE;
     struct SlubBlock *temp = slub_small_block_list;
     if (temp == NULL || temp->size > block->size)
     {
@@ -219,10 +218,10 @@ static void slub_free_small(void *ptr, size_t size)
     temp->next = block;
 }
 
-// 分配小块内存
+// 分配小块
 static void *slub_alloc_small(float size)
 {
-    size_t total_size = size;
+    size_t total_size = size * PGSIZE;
     struct SlubBlock *temp = slub_small_block_list;
     while (temp!= NULL)
     {
@@ -237,14 +236,14 @@ static void *slub_alloc_small(float size)
             temp = temp->next;
         }
     }
-    // 没有找到匹配项
-    struct Page *page = buddy_alloc_pages(1); // 分配一个页
+    // 没有找到
+    struct Page *page = buddy_alloc_pages(1); 
     if (page == NULL)
     {
-        return NULL; // 分配失败
+        return NULL; 
     }
-    struct SlubBlock *current_block = (struct SlubBlock *)page; // 获取页面指针
-    current_block->size = 0;                                    // 设置大小
+    struct SlubBlock *current_block = (struct SlubBlock *)page; 
+    current_block->size = 0;                                    
     slub_free_small((void *)(current_block + 1), 1);
     return (void *)(current_block + 1);
 }
@@ -284,7 +283,6 @@ static void slub_free(struct Page *ptr, size_t size)
         slub_free_small(ptr, size);
     }
 }
-
 static void slub_check(void) {
     int total_free_pages = 0;
 
@@ -377,19 +375,22 @@ static void slub_check(void) {
 
     
 
-    cprintf("\n然后请求小块内存（大小为 128）\n");
-    small_block_ptr = slub_alloc_small(128);
-    cprintf("小块内存分配成功\n");
+    void *small_block1 = slub_alloc_small(64/PGSIZE);
+    void *small_block2 = slub_alloc_small(128/PGSIZE);
 
-    
+    assert(small_block1!= NULL);
+    assert(small_block2!= NULL);
 
-    cprintf("\n收回小块内存\n");
-    slub_free_small(small_block_ptr, 128);
-    cprintf("小块内存回收成功\n");
+    cprintf("\n小块内存分配成功\n");
+
+    cprintf("\n收回小块内存1\n");
+    slub_free_small(small_block1, 64/PGSIZE);
+    cprintf("\n收回小块内存2\n");
+    slub_free_small(small_block2, 128/PGSIZE);
+    cprintf("\n小块内存回收成功\n");
 
     cprintf("\n");
 }
-
 const struct pmm_manager slub_pmm_manager = {
     .name = "slub_pmm_manager",
     .init = slub_init,
