@@ -592,10 +592,12 @@ static void slub_check(void)
 #### 5. 算法实现细节
 
 - **伙伴系统实现细节**：
+
   - `buddy_alloc_pages` 检查对应阶层的空闲页块列表。若列表为空，则从更高阶获取块并不断分裂，直到得到所需阶层块大小。
   - `buddy_free_pages` 释放页块时，首先检查该阶层的页块是否能和相邻页块合并。若合并成功，则将合并后的块移动到更高阶，最终减少碎片。
 
 - **slub 层实现细节**：
+
   - `slub_alloc_small` 首先检查链表中是否存在可用的小块。若无可用块，调用 `buddy_alloc_pages` 分配新页并将其分割为多个小块，插入到链表中。然后从链表中取出合适的小块进行分配。
 
   ```c
@@ -657,7 +659,9 @@ static void slub_check(void)
   ```
 
 - **边界处理**：分配器会处理超过最大阶数 `MAX_ORDER` 的请求，并确保分配失败时返回 `NULL`。小块释放时检查其有效性，避免链表操作出现错误。
+
 - **优化措施**：
+
   - 小块分配时会进行内存对齐，并按块大小归类链表，以提高分配效率。
   - 伙伴系统的阶数和分配的页块大小对齐，以减少页面碎片。
 
@@ -817,10 +821,51 @@ static void slub_check(void) {
 
    如果操作系统运行在虚拟化环境下，如 KVM、VMware、Xen 等 上，它可以通过接口，如 `VMware Tools`、`XenStore` 等来获取虚拟机的内存配置信息。虚拟化层通常会告知虚拟机操作系统它能够使用的物理内存范围。
 
+5. 解析设备树
 
+   在 OpenSBI 中，可以通过解析设备树 (Device Tree) 来获得可用的内存范围。OpenSBI 本身并没有提供直接的 API 获取内存范围，但可以使用设备树的相关信息来获取系统内存的详细信息。首先我们得知道设备树是什么。在设备启动过程中，OpenSBI 固件完成对于包括物理内存在内的各外设的扫描，将扫描结果以 DTB(Device Tree Blob) 的格式保存在物理内存中的某个地方。随后 OpenSBI 会将其地址保存在 `a1` 寄存器中，给我们使用。而设备树中包含了系统的硬件描述，其中包括内存区域。通过解析设备树中的 `/memory` 节点，可以获得物理内存的起始地址和大小。 `/memory` 节点通常包含一个属性 `reg`，该属性定义了物理内存的基地址和大小。`reg` 属性中的内容通常是一个地址-大小对列表，例如：
 
+   ```c
+   memory {
+       device_type = "memory";
+       reg = <0x00000000 0x40000000>; // 内存从 0x00000000 开始，大小为 1 GB
+   };
+   ```
 
+   因此通过解析设备树找到可用内存范围的具体操作如下：
 
+   因为OpenSBI 包含对 FDT（Flattened Device Tree）格式的支持，允许通过 FDT 库函数访问设备树。所以可以使用 `fdt_node_offset_by_compatible` 找到设备树中描述内存的节点，然后使用 `fdt_getprop` 获取 `reg` 属性。具体代码例子如下：
 
+   ```c
+   #include <libfdt.h>
+   #include <stdio.h>  // 使用 printf 输出
+   
+   void get_memory_range_from_fdt(void *fdt) {
+       int memory_offset;
+       const fdt32_t *reg;
+       int len;
+   
+       // 获取 /memory 节点偏移
+       memory_offset = fdt_node_offset_by_compatible(fdt, -1, "memory");
+       if (memory_offset < 0) {
+           printf("Error: /memory node not found\n");
+           return;
+       }
+   
+       // 获取 reg 属性
+       reg = fdt_getprop(fdt, memory_offset, "reg", &len);
+       if (!reg || len < 16) { // 检查 reg 属性长度
+           printf("Error: Invalid reg property\n");
+           return;
+       }
+   
+       // 解析 base address 和 size（64 位）
+       uint64_t base = ((uint64_t)fdt32_to_cpu(reg[0]) << 32) | fdt32_to_cpu(reg[1]);
+       uint64_t size = ((uint64_t)fdt32_to_cpu(reg[2]) << 32) | fdt32_to_cpu(reg[3]);
+   
+       printf("Memory base address: 0x%lx, size: 0x%lx\n", base, size);
+   }
+   
+   ```
 
-
+   
