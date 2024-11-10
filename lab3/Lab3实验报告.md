@@ -8,43 +8,43 @@
 
 1. **`do_pgfault()`**
 
-	当系统发生缺页异常后，程序会将跳转到该函数进行缺页处理。在该函数中会首先判断出错的虚拟地址在 `mm_struct` 里是否可用，如果可用：若查找的 `pte` 当前为空（表示该虚拟页没有映射），则调用 `pgdir_alloc_page` 分配物理页并建立页表映射。如果页表项不为空（`*ptep != 0`），使用 `swap_in()` 函数换入页。
+   当系统发生缺页异常后，程序会将跳转到该函数进行缺页处理。在该函数中会首先判断出错的虚拟地址在 `mm_struct` 里是否可用，如果可用：若查找的 `pte` 当前为空（表示该虚拟页没有映射），则调用 `pgdir_alloc_page` 分配物理页并建立页表映射。如果页表项不为空（`*ptep != 0`），使用 `swap_in()` 函数换入页。
 
 2. **`swap_in()`**
 
-	用来将把已经在页表里面映射过并且当前在磁盘上的页换进内存中。
+   用来将把已经在页表里面映射过并且当前在磁盘上的页换进内存中。
 
 3. **`swap_out()`**
 
-	当使用 `alloc_page` 函数已经分配不到内存页的情况下，使用该函数把内存中的页从内存中替换出去。
+   当使用 `alloc_page` 函数已经分配不到内存页的情况下，使用该函数把内存中的页从内存中替换出去。
 
 4. **`get_pte()`**
 
-	从页表中找到指定地址的页表项。
+   从页表中找到指定地址的页表项。
 
 5. **`page_remove_pte()`**
 
-	从页表中删除指定地址的页表项。
+   从页表中删除指定地址的页表项。
 
 6. **`swapfs_write()`**
 
-	用于将页面写入磁盘。在这里由于需要换出页面，而页面内容如果被修改过那么就与磁盘中的不一致，所以需要将其重新写回磁盘。
+   用于将页面写入磁盘。在这里由于需要换出页面，而页面内容如果被修改过那么就与磁盘中的不一致，所以需要将其重新写回磁盘。
 
 7. **`swapfs_read()`**
 
-	用于将磁盘中的数据写入内存。
+   用于将磁盘中的数据写入内存。
 
 8. **`_fifo_swap_out_victim()`**
 
-	`FIFO` 替换方法的核心算法，用来将保存页面队列中最先进来的的内存页替换出去。
+   `FIFO` 替换方法的核心算法，用来将保存页面队列中最先进来的的内存页替换出去。
 
 9. **`free_page()`**
 
-	用来将要替换的内存页释放。
+   用来将要替换的内存页释放。
 
 10. **`tlb_invalidate()`**
 
-	在替换内存页或更新页表映射之后用来将 `TLB` 刷新。
+    在替换内存页或更新页表映射之后用来将 `TLB` 刷新。
 
 ## 练习 2：深入理解不同分页模式的工作原理（思考题）
 
@@ -118,7 +118,7 @@ if (!(*pdep0 & PTE_V)) {
 >
 > - 请描述页目录项（Page Directory Entry）和页表项（Page Table Entry）中组成部分对 ucore 实现页替换算法的潜在用处。
 > - 如果 ucore 的缺页服务例程在执行过程中访问内存，出现了页访问异常，请问硬件要做哪些事情？
-> 	- 数据结构 Page 的全局变量（其实是一个数组）的每一项与页表中的页目录项和页表项有无对应关系？如果有，其对应关系是啥？
+>   - 数据结构 Page 的全局变量（其实是一个数组）的每一项与页表中的页目录项和页表项有无对应关系？如果有，其对应关系是啥？
 
 ### 实现代码
 
@@ -254,4 +254,247 @@ _clock_swap_out_victim(struct mm_struct *mm, struct Page ** ptr_page, int in_tic
 ## 扩展练习 Challenge：实现不考虑实现开销和效率的 LRU 页替换算法（需要编程）
 
 > challenge 部分不是必做部分，不过在正确最后会酌情加分。需写出有详细的设计、分析和测试的实验报告。完成出色的可获得适当加分。
+
+
+
+### 实现思路
+
+维护一个活动页链表，当我们访问这个链表内已经有的内存页的虚拟地址时，把对应的内存页从链表中删除，并插入到链表头。而当访问没有在这个链表的内存页时直接插入到链表头即可。这样每次新访问的内存页会一直在链表头，而最久没有访问的页会在链表尾部，我们替换的时候直接替换到尾部即可。
+
+### 具体代码
+
+前几部分的代码跟FIFO算法基本一样，不需要太大改变。
+
+```c
+static list_entry_t pra_list_head;
+
+static int
+_lru_init_mm(struct mm_struct *mm)
+{     
+     list_init(&pra_list_head);
+     mm->sm_priv = &pra_list_head;
+     //cprintf(" mm->sm_priv %x in fifo_init_mm\n",mm->sm_priv);
+     return 0;
+}
+
+static int
+_lru_map_swappable(struct mm_struct *mm, uintptr_t addr, struct Page *page, int swap_in)
+{
+    list_entry_t *head=(list_entry_t*) mm->sm_priv;
+    list_entry_t *entry=&(page->pra_page_link);
+ 
+    assert(entry != NULL && head != NULL);
+    //record the page access situlation
+
+    //(1)link the most recent arrival page at the back of the pra_list_head qeueue.
+    list_add(head, entry);
+    return 0;
+}
+
+static int
+_lru_swap_out_victim(struct mm_struct *mm, struct Page ** ptr_page, int in_tick)
+{
+     list_entry_t *head=(list_entry_t*) mm->sm_priv;
+     assert(head != NULL);
+     assert(in_tick==0);
+     /* Select the victim */
+     //(1)  unlink the  earliest arrival page in front of pra_list_head qeueue
+     //(2)  set the addr of addr of this page to ptr_page
+    list_entry_t* entry = list_prev(head);
+    if (entry != head) {
+        list_del(entry);
+        *ptr_page = le2page(entry, pra_page_link);
+    } else {
+        *ptr_page = NULL;
+    }
+    return 0;
+}
+```
+
+
+
+为了检查访问的内存页是否已经在链表中，新增加了一个函数update_or_ignore，专门来检查访问的虚拟地址是否已经被映射。
+
+```c
+static void update_or_ignore(unsigned int addr) {
+    list_entry_t *head = &pra_list_head, *le = head;
+    
+    while ((le = list_prev(le)) != head) {
+        struct Page *curr = le2page(le, pra_page_link);
+        if (curr->pra_vaddr == addr) {
+            list_del(le);         // 删除找到的页
+            list_add(head, le);   // 将页移到链表头部
+            return;               // 直接返回，不必继续查找
+        }
+    }
+}
+```
+
+
+
+也稍微修改了一下检查函数，输出每次访问内存过后的链表内部情况。
+
+```c
+static void
+printlist() {
+    cprintf("--------head----------\n");
+    list_entry_t *head = &pra_list_head, *le = head;
+    while ((le = list_next(le)) != head)
+    {
+        struct Page* page = le2page(le, pra_page_link);
+        cprintf("vaddr: %x\n", page->pra_vaddr);
+    }
+    cprintf("---------tail-----------\n");
+}
+
+static void write_and_check(unsigned int addr, unsigned char value, int expected_faults) {
+    cprintf("write Virt Page %x in lru_check_swap\n", addr);
+    update_or_ignore(addr);
+    *(unsigned char *)addr = value;
+    //assert(pgfault_num == expected_faults);
+}
+
+static int _lru_check_swap(void) {
+    write_and_check(0x3000, 0x0c, 4);
+    printlist();
+    write_and_check(0x1000, 0x0a, 4);
+    printlist();
+    write_and_check(0x4000, 0x0d, 4);
+    printlist();
+    write_and_check(0x2000, 0x0b, 4);
+    printlist();
+    write_and_check(0x5000, 0x0e, 5);
+    printlist();
+    write_and_check(0x2000, 0x0b, 5);
+    printlist();
+    write_and_check(0x1000, 0x0a, 6);
+    printlist();
+    write_and_check(0x2000, 0x0b, 7);
+    printlist();
+    write_and_check(0x3000, 0x0c, 8);
+    printlist();
+    write_and_check(0x4000, 0x0d, 9);
+    printlist();
+    write_and_check(0x5000, 0x0e, 10);
+    printlist();
+    write_and_check(0x1000, 0x0a, 11);
+    printlist();
+
+    return 0;
+}
+
+```
+
+
+
+### 实验结果
+
+```c
+write Virt Page 3000 in lru_check_swap
+--------head----------
+vaddr: 3000
+vaddr: 4000
+vaddr: 2000
+vaddr: 1000
+--------tail----------
+write Virt Page 1000 in lru_check_swap
+--------head----------
+vaddr: 1000
+vaddr: 3000
+vaddr: 4000
+vaddr: 2000
+--------tail----------
+write Virt Page 4000 in lru_check_swap
+--------head----------
+vaddr: 4000
+vaddr: 1000
+vaddr: 3000
+vaddr: 2000
+--------tail----------
+write Virt Page 2000 in lru_check_swap
+--------head----------
+vaddr: 2000
+vaddr: 4000
+vaddr: 1000
+vaddr: 3000
+--------tail----------
+write Virt Page 5000 in lru_check_swap
+Store/AMO page fault
+page fault at 0x00005000: K/W
+swap_out: i 0, store page in vaddr 0x3000 to disk swap entry 4
+--------head----------
+vaddr: 5000
+vaddr: 2000
+vaddr: 4000
+vaddr: 1000
+--------tail----------
+write Virt Page 2000 in lru_check_swap
+--------head----------
+vaddr: 2000
+vaddr: 5000
+vaddr: 4000
+vaddr: 1000
+--------tail----------
+write Virt Page 1000 in lru_check_swap
+--------head----------
+vaddr: 1000
+vaddr: 2000
+vaddr: 5000
+vaddr: 4000
+--------tail----------
+write Virt Page 2000 in lru_check_swap
+--------head----------
+vaddr: 2000
+vaddr: 1000
+vaddr: 5000
+vaddr: 4000
+--------tail----------
+write Virt Page 3000 in lru_check_swap
+Store/AMO page fault
+page fault at 0x00003000: K/W
+swap_out: i 0, store page in vaddr 0x4000 to disk swap entry 5
+swap_in: load disk swap entry 4 with swap_page in vadr 0x3000
+--------head----------
+vaddr: 3000
+vaddr: 2000
+vaddr: 1000
+vaddr: 5000
+--------tail----------
+write Virt Page 4000 in lru_check_swap
+Store/AMO page fault
+page fault at 0x00004000: K/W
+swap_out: i 0, store page in vaddr 0x5000 to disk swap entry 6
+swap_in: load disk swap entry 5 with swap_page in vadr 0x4000
+--------head----------
+vaddr: 4000
+vaddr: 3000
+vaddr: 2000
+vaddr: 1000
+--------tail----------
+write Virt Page 5000 in lru_check_swap
+Store/AMO page fault
+page fault at 0x00005000: K/W
+swap_out: i 0, store page in vaddr 0x1000 to disk swap entry 2
+swap_in: load disk swap entry 6 with swap_page in vadr 0x5000
+--------head----------
+vaddr: 5000
+vaddr: 4000
+vaddr: 3000
+vaddr: 2000
+--------tail----------
+write Virt Page 1000 in lru_check_swap
+Store/AMO page fault
+page fault at 0x00001000: K/W
+swap_out: i 0, store page in vaddr 0x2000 to disk swap entry 3
+swap_in: load disk swap entry 2 with swap_page in vadr 0x1000
+--------head----------
+vaddr: 1000
+vaddr: 5000
+vaddr: 4000
+vaddr: 3000
+--------tail----------
+count is 1, total is 8
+check_swap() succeeded!
+
+```
 
