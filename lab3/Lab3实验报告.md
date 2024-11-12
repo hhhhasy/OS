@@ -8,43 +8,43 @@
 
 1. **`do_pgfault()`**
 
-   当系统发生缺页异常后，程序会将跳转到该函数进行缺页处理。在该函数中会首先判断出错的虚拟地址在 `mm_struct` 里是否可用，如果可用：若查找的 `pte` 当前为空（表示该虚拟页没有映射），则调用 `pgdir_alloc_page` 分配物理页并建立页表映射。如果页表项不为空（`*ptep != 0`），使用 `swap_in()` 函数换入页。
+	当系统发生缺页异常后，程序会将跳转到该函数进行缺页处理。在该函数中会首先判断出错的虚拟地址在 `mm_struct` 里是否可用，如果可用：若查找的 `pte` 当前为空（表示该虚拟页没有映射），则调用 `pgdir_alloc_page` 分配物理页并建立页表映射。如果页表项不为空（`*ptep != 0`），使用 `swap_in()` 函数换入页。
 
 2. **`swap_in()`**
 
-   用来将把已经在页表里面映射过并且当前在磁盘上的页换进内存中。
+	用来将把已经在页表里面映射过并且当前在磁盘上的页换进内存中。
 
 3. **`swap_out()`**
 
-   当使用 `alloc_page` 函数已经分配不到内存页的情况下，使用该函数把内存中的页从内存中替换出去。
+	当使用 `alloc_page` 函数已经分配不到内存页的情况下，使用该函数把内存中的页从内存中替换出去。
 
 4. **`get_pte()`**
 
-   从页表中找到指定地址的页表项。
+	从页表中找到指定地址的页表项。
 
 5. **`page_remove_pte()`**
 
-   从页表中删除指定地址的页表项。
+	从页表中删除指定地址的页表项。
 
 6. **`swapfs_write()`**
 
-   用于将页面写入磁盘。在这里由于需要换出页面，而页面内容如果被修改过那么就与磁盘中的不一致，所以需要将其重新写回磁盘。
+	用于将页面写入磁盘。在这里由于需要换出页面，而页面内容如果被修改过那么就与磁盘中的不一致，所以需要将其重新写回磁盘。
 
 7. **`swapfs_read()`**
 
-   用于将磁盘中的数据写入内存。
+	用于将磁盘中的数据写入内存。
 
 8. **`_fifo_swap_out_victim()`**
 
-   `FIFO` 替换方法的核心算法，用来将保存页面队列中最先进来的的内存页替换出去。
+	`FIFO` 替换方法的核心算法，用来将保存页面队列中最先进来的的内存页替换出去。
 
 9. **`free_page()`**
 
-   用来将要替换的内存页释放。
+	用来将要替换的内存页释放。
 
 10. **`tlb_invalidate()`**
 
-    在替换内存页或更新页表映射之后用来将 `TLB` 刷新。
+	在替换内存页或更新页表映射之后用来将 `TLB` 刷新。
 
 ## 练习 2：深入理解不同分页模式的工作原理（思考题）
 
@@ -112,47 +112,45 @@ if (!(*pdep0 & PTE_V)) {
 
 ## 练习 3：给未被映射的地址映射上物理页（需要编程）
 
-> 补充完成 do_pgfault（mm/vmm.c）函数，给未被映射的地址映射上物理页。设置访问权限 的时候需要参考页面所在 VMA 的权限，同时需要注意映射物理页时需要操作内存控制 结构所指定的页表，而不是内核的页表。
+> 补充完成 do_pgfault（mm/vmm.c）函数，给未被映射的地址映射上物理页。设置访问权限的时候需要参考页面所在 VMA 的权限，同时需要注意映射物理页时需要操作内存控制结构所指定的页表，而不是内核的页表。
 >
 > 请在实验报告中简要说明你的设计实现过程。请回答如下问题：
 >
 > - 请描述页目录项（Page Directory Entry）和页表项（Page Table Entry）中组成部分对 ucore 实现页替换算法的潜在用处。
 > - 如果 ucore 的缺页服务例程在执行过程中访问内存，出现了页访问异常，请问硬件要做哪些事情？
->   - 数据结构 Page 的全局变量（其实是一个数组）的每一项与页表中的页目录项和页表项有无对应关系？如果有，其对应关系是啥？
+> 	- 数据结构 Page 的全局变量（其实是一个数组）的每一项与页表中的页目录项和页表项有无对应关系？如果有，其对应关系是啥？
 
 ### 实现代码
+
+页面错误处理函数 do_pgfault 的作用是在发生页面错误时，根据错误地址和错误码进行相应的处理。
 
 ```c
 int do_pgfault(struct mm_struct *mm, uint_t error_code, uintptr_t addr) {
     int ret = -E_INVAL;
-    struct vma_struct *vma = find_vma(mm, addr);
+    struct vma_struct *vma = find_vma(mm, addr);//查找包含错误地址的虚拟内存区域 (VMA)
     pgfault_num++;
-    if (vma == NULL || vma->vm_start > addr) {
+    if (vma == NULL || vma->vm_start > addr) {//检查地址是否有效
         cprintf("not valid addr %x, and  can not find it in vma\n", addr);
         goto failed;
     }
     uint32_t perm = PTE_U;
-    if (vma->vm_flags & VM_WRITE) {
+    if (vma->vm_flags & VM_WRITE) {//设置页面权限
         perm |= (PTE_R | PTE_W);
     }
     addr = ROUNDDOWN(addr, PGSIZE);
-
     ret = -E_NO_MEM;
-
     pte_t *ptep=NULL;
-   
-    ptep = get_pte(mm->pgdir, addr, 1);  
-    if (*ptep == 0) {
+    ptep = get_pte(mm->pgdir, addr, 1);//获取页表项 (PTE)
+    /*处理页面错误*/
+    if (*ptep == 0) {//页面不存在的情况：分配一个新的页面并建立映射
         if (pgdir_alloc_page(mm->pgdir, addr, perm) == NULL) {
             cprintf("pgdir_alloc_page in do_pgfault failed\n");
             goto failed;
         }
-    } else {
-        
-        
+    } else {//页面存在但需要从交换区加载
         if (swap_init_ok) {
             struct Page *page = NULL;
-            //我们需要实现的部分
+            /*我们需要实现的部分*/
             swap_in(mm,addr,&page); //把从磁盘中得到的页放进内存中
             page_insert(mm->pgdir,page,addr,perm);//在页表中新增加一个映射，并且设置权限
             swap_map_swappable(mm,addr,page,1);//将该内存页设置为可交换，最后一个参数目前还没有用
@@ -162,7 +160,6 @@ int do_pgfault(struct mm_struct *mm, uint_t error_code, uintptr_t addr) {
             goto failed;
         }
    }
-
    ret = 0;
 failed:
     return ret;
@@ -184,11 +181,13 @@ failed:
 ```c
 static int
 _clock_init_mm(struct mm_struct *mm)
-{      
-     list_init(&pra_list_head);// 初始化pra_list_head为空链表
-     mm->sm_priv = &pra_list_head;// 初始化当前指针curr_ptr指向pra_list_head，表示当前页面替换位置为链表头
-     curr_ptr=&pra_list_head;// 将mm的私有成员指针指向pra_list_head，用于后续的页面替换算法操作
-     return 0;
+{
+    // cprintf(" mm->sm_priv %x in fifo_init_mm\n",mm->sm_priv);
+    /*我们需要实现的部分*/
+    list_init(&pra_list_head);    // 初始化pra_list_head为空链表
+    curr_ptr = &pra_list_head;    // 初始化当前指针curr_ptr指向pra_list_head，表示当前页面替换位置为链表头
+    mm->sm_priv = &pra_list_head; // 将mm的私有成员指针指向pra_list_head，用于后续的页面替换算法操作
+    return 0;
 }
 ```
 
@@ -198,12 +197,13 @@ _clock_init_mm(struct mm_struct *mm)
 static int
 _clock_map_swappable(struct mm_struct *mm, uintptr_t addr, struct Page *page, int swap_in)
 {
-    list_entry_t *entry=&(page->pra_page_link);//获得要放进的内存页
+    list_entry_t *entry = &(page->pra_page_link); // 获得要放进的内存页
     assert(entry != NULL && curr_ptr != NULL);
-    list_entry_t *head=(list_entry_t*) mm->sm_priv;//获得链表头部
+    /*我们需要实现的部分*/
+    list_entry_t *head = (list_entry_t *)mm->sm_priv; // 获得链表头部
     assert(entry != NULL && head != NULL);
-    list_add_before(head,entry); // 将页面page插入到页面链表pra_list_head的末尾
-    page->visited = 1;// 将页面的visited标志置为1，表示该页面已被访问
+    list_add_before(head, entry); // 将页面page插入到页面链表pra_list_head的末尾
+    page->visited = 1;            // 将页面的visited标志置为1，表示该页面已被访问
     return 0;
 }
 ```
@@ -212,34 +212,40 @@ _clock_map_swappable(struct mm_struct *mm, uintptr_t addr, struct Page *page, in
 
 ```c
 static int
-_clock_swap_out_victim(struct mm_struct *mm, struct Page ** ptr_page, int in_tick)
+_clock_swap_out_victim(struct mm_struct *mm, struct Page **ptr_page, int in_tick)
 {
-     list_entry_t *head=(list_entry_t*) mm->sm_priv;
-         assert(head != NULL);
-     assert(in_tick==0);
-    
-    while (1) {      
-        curr_ptr = list_next(curr_ptr);// 遍历页面链表pra_list_head，查找最早未被访问的页面
-        if(curr_ptr == head) {
-            curr_ptr = list_next(curr_ptr);//如果访问到了head，多做一个list_next步骤
-            if(curr_ptr == head) {
-              *ptr_page = NULL;
-             break;
+    list_entry_t *head = (list_entry_t *)mm->sm_priv;
+    assert(head != NULL);
+    assert(in_tick == 0);
+    /* Select the victim */
+    //(1)  unlink the  earliest arrival page in front of pra_list_head qeueue
+    //(2)  set the addr of addr of this page to ptr_page
+    while (1)
+    {
+        /*我们需要实现的部分*/
+        curr_ptr = list_next(curr_ptr); // 遍历页面链表pra_list_head，查找最早未被访问的页面
+        if (curr_ptr == head)
+        {
+            curr_ptr = list_next(curr_ptr); // 如果访问到了head，多做一个list_next步骤
+            if (curr_ptr == head)
+            {
+                *ptr_page = NULL;
+                break;
             }
         }
-    
-
-        struct Page* page = le2page(curr_ptr, pra_page_link);// 获取当前页面对应的Page结构指针
-        if(page->visited==0){
-            *ptr_page=page;// 如果当前页面未被访问，则将该页面从页面链表中删除，并将该页面指针赋值给ptr_page作为换出页面
+        struct Page *page = le2page(curr_ptr, pra_page_link); // 获取当前页面对应的Page结构指针
+        if (page->visited == 0)
+        {
+            *ptr_page = page; // 如果当前页面未被访问，则将该页面从页面链表中删除，并将该页面指针赋值给ptr_page作为换出页面
             list_del(curr_ptr);
-            cprintf("curr_ptr %p\n",curr_ptr);;
+            cprintf("curr_ptr %p\n", curr_ptr);
+            ;
             break;
         }
-        else{
-            page->visited=0;// 如果当前页面已被访问，则将visited标志置为0，表示该页面已被重新访问
+        else
+        {
+            page->visited = 0; // 如果当前页面已被访问，则将visited标志置为0，表示该页面已被重新访问
         }
-
     }
     return 0;
 }
@@ -263,7 +269,7 @@ _clock_swap_out_victim(struct mm_struct *mm, struct Page ** ptr_page, int in_tic
 
 ### 具体代码
 
-前几部分的代码跟FIFO算法基本一样，不需要太大改变。
+前几部分的代码跟 FIFO 算法基本一样，不需要太大改变。
 
 ```c
 static list_entry_t pra_list_head;
@@ -313,7 +319,7 @@ _lru_swap_out_victim(struct mm_struct *mm, struct Page ** ptr_page, int in_tick)
 
 
 
-为了检查访问的内存页是否已经在链表中，新增加了一个函数update_or_ignore，专门来检查访问的虚拟地址是否已经被映射。
+为了检查访问的内存页是否已经在链表中，新增加了一个函数 update_or_ignore，专门来检查访问的虚拟地址是否已经被映射。
 
 ```c
 static void update_or_ignore(unsigned int addr) {
@@ -497,4 +503,3 @@ count is 1, total is 8
 check_swap() succeeded!
 
 ```
-
