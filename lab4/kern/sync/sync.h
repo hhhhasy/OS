@@ -23,6 +23,7 @@ static inline void __intr_restore(bool flag) {
     do {                   \
         x = __intr_save(); \
     } while (0)
+    //如果宏的内容是多条语句，在没有额外封装的情况下，如果宏被用在控制结构（如 if、while 等）中，可能会导致逻辑错误或语法问题。
 #define local_intr_restore(x) __intr_restore(x);
 
 #endif /* !__KERN_SYNC_SYNC_H__ */

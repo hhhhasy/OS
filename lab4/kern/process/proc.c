@@ -204,57 +204,75 @@ forkret(void) {
     forkrets(current->tf);
 }
 
-// hash_proc - add proc into proc hash_list
+// hash_proc - 将进程添加到进程哈希链表中
+// 通过计算进程PID的哈希值来确定其在哈希链表中的位置
 static void
 hash_proc(struct proc_struct *proc) {
+    // 使用进程PID的哈希值来定位链表，添加该进程到对应位置
     list_add(hash_list + pid_hashfn(proc->pid), &(proc->hash_link));
 }
 
-// find_proc - find proc frome proc hash_list according to pid
+// find_proc - 根据PID从进程哈希链表中查找进程
+// 如果进程的PID有效，则遍历哈希链表中的对应位置，查找PID匹配的进程结构
 struct proc_struct *
 find_proc(int pid) {
     if (0 < pid && pid < MAX_PID) {
+        // 通过PID的哈希值定位到哈希链表的起始位置
         list_entry_t *list = hash_list + pid_hashfn(pid), *le = list;
+        // 遍历哈希链表中的所有元素，寻找匹配的PID
         while ((le = list_next(le)) != list) {
             struct proc_struct *proc = le2proc(le, hash_link);
+            // 如果找到匹配的PID，返回对应的进程结构
             if (proc->pid == pid) {
                 return proc;
             }
         }
     }
+    // 如果没有找到，返回NULL
     return NULL;
 }
 
-// kernel_thread - create a kernel thread using "fn" function
-// NOTE: the contents of temp trapframe tf will be copied to 
-//       proc->tf in do_fork-->copy_thread function
+
+// kernel_thread - 使用指定的函数 "fn" 创建一个内核线程
+// 函数会初始化一个 trapframe（陷阱帧）结构体，设置必要的寄存器值
+// 然后调用 do_fork 函数来创建新线程，并将 trapframe 中的内容传递给新线程
+// NOTE: 在 do_fork --> copy_thread 函数中，临时的 trapframe (tf) 内容会被复制到新进程的 tf 中
 int
 kernel_thread(int (*fn)(void *), void *arg, uint32_t clone_flags) {
     struct trapframe tf;
     memset(&tf, 0, sizeof(struct trapframe));
-    tf.gpr.s0 = (uintptr_t)fn;
-    tf.gpr.s1 = (uintptr_t)arg;
+    // 设置trapframe中的参数寄存器
+    tf.gpr.s0 = (uintptr_t)fn;      // 函数指针
+    tf.gpr.s1 = (uintptr_t)arg;     // 函数参数
+    // 设置状态寄存器，确保内核线程在内核态运行时可以处理中断
     tf.status = (read_csr(sstatus) | SSTATUS_SPP | SSTATUS_SPIE) & ~SSTATUS_SIE;
+    // 设置入口点为内核线程的启动函数
     tf.epc = (uintptr_t)kernel_thread_entry;
+    // 调用 do_fork 创建新进程，并传入适当的标志和trapframe
     return do_fork(clone_flags | CLONE_VM, 0, &tf);
 }
 
-// setup_kstack - alloc pages with size KSTACKPAGE as process kernel stack
+// setup_kstack - 为进程分配内核栈空间，大小为 KSTACKPAGE
+// 使用 alloc_pages 分配页面，并将其地址保存在进程的 kstack 成员中
 static int
 setup_kstack(struct proc_struct *proc) {
     struct Page *page = alloc_pages(KSTACKPAGE);
     if (page != NULL) {
+        // 将内核栈指针指向分配的页面
         proc->kstack = (uintptr_t)page2kva(page);
         return 0;
     }
+    // 分配失败，返回内存不足错误码
     return -E_NO_MEM;
 }
 
-// put_kstack - free the memory space of process kernel stack
+// put_kstack - 释放进程的内核栈空间
+// 通过 kva2page 函数将虚拟地址转换为页面，并调用 free_pages 释放相应的内存
 static void
 put_kstack(struct proc_struct *proc) {
     free_pages(kva2page((void *)(proc->kstack)), KSTACKPAGE);
 }
+
 
 // copy_mm - process "proc" duplicate OR share process "current"'s mm according clone_flags
 //         - if clone_flags & CLONE_VM, then "share" ; else "duplicate"
@@ -267,18 +285,27 @@ copy_mm(uint32_t clone_flags, struct proc_struct *proc) {
 
 // copy_thread - setup the trapframe on the  process's kernel stack top and
 //             - setup the kernel entry point and stack of process
+// copy_thread - 复制线程的上下文信息到新进程的线程结构中
+// 该函数会在创建子进程时调用，负责将父进程的 trapframe 复制到新进程中，并初始化新进程的上下文
 static void
 copy_thread(struct proc_struct *proc, uintptr_t esp, struct trapframe *tf) {
+    // 设置进程的 trapframe 指针，指向内核栈的合适位置
     proc->tf = (struct trapframe *)(proc->kstack + KSTACKSIZE - sizeof(struct trapframe));
+    // 复制父进程的 trapframe 信息到新进程
     *(proc->tf) = *tf;
 
-    // Set a0 to 0 so a child process knows it's just forked
+    // 将 a0 寄存器设置为 0，通知子进程它是通过 fork 创建的
     proc->tf->gpr.a0 = 0;
+
+    // 设置栈指针（sp），如果传入的 esp 为 0，则使用 trapframe 的地址作为栈指针
+    // 否则使用传入的 esp
     proc->tf->gpr.sp = (esp == 0) ? (uintptr_t)proc->tf : esp;
 
+    // 设置新进程的上下文，返回地址 (ra) 设置为 forkret 函数，栈指针 (sp) 指向新进程的 trapframe
     proc->context.ra = (uintptr_t)forkret;
     proc->context.sp = (uintptr_t)(proc->tf);
 }
+
 
 /* do_fork -     parent process for a new child process
  * @clone_flags: used to guide how to clone the child process
