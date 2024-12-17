@@ -348,24 +348,23 @@ int copy_range(pde_t *to, pde_t *from, uintptr_t start, uintptr_t end,
                bool share) {
     assert(start % PGSIZE == 0 && end % PGSIZE == 0);
     assert(USER_ACCESS(start, end));
-    // copy content by page unit.
+    // 按页单位复制内容
     do {
-        // call get_pte to find process A's pte according to the addr start
+        // 调用 get_pte 根据地址 start 找到进程 A 的 pte
         pte_t *ptep = get_pte(from, start, 0), *nptep;
         if (ptep == NULL) {
             start = ROUNDDOWN(start + PTSIZE, PTSIZE);
             continue;
         }
-        // call get_pte to find process B's pte according to the addr start. If
-        // pte is NULL, just alloc a PT
+        // 调用 get_pte 根据地址 start 找到进程 B 的 pte。如果 pte 为 NULL，则分配一个 PT
         if (*ptep & PTE_V) {
             if ((nptep = get_pte(to, start, 1)) == NULL) {
                 return -E_NO_MEM;
             }
             uint32_t perm = (*ptep & PTE_USER);
-            // get page from ptep
+            // 从 ptep 获取页面
             struct Page *page = pte2page(*ptep);
-            // alloc a page for process B
+            // 为进程 B 分配一个页面
             struct Page *npage = alloc_page();
             assert(page != NULL);
             assert(npage != NULL);
@@ -388,7 +387,10 @@ int copy_range(pde_t *to, pde_t *from, uintptr_t start, uintptr_t end,
              * (3) memory copy from src_kvaddr to dst_kvaddr, size is PGSIZE
              * (4) build the map of phy addr of  nage with the linear addr start
              */
-
+            void *src_kvaddr = page2kva(page);// 获取源页面的内核虚拟地址
+            void *dst_kvaddr = page2kva(npage);// 获取目标页面的内核虚拟地址
+            memcpy(dst_kvaddr, src_kvaddr, PGSIZE);// 将源页面的内容复制到目标页面
+            ret = page_insert(to, npage, start, perm);// 将目标页面插入到目标页表中
 
             assert(ret == 0);
         }

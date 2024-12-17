@@ -222,7 +222,15 @@ proc_run(struct proc_struct *proc) {
         *   lcr3():                   Modify the value of CR3 register
         *   switch_to():              Context switching between two processes
         */
-
+        bool intr_flag;
+        struct proc_struct *prev = current, *next = proc;
+        local_intr_save(intr_flag); // 关闭中断
+        {
+            current = proc; // 切换当前进程
+            lcr3(next->cr3); // 加载新进程的页目录表基地址到CR3寄存器
+            switch_to(&(prev->context), &(next->context)); // 切换上下文
+        }
+        local_intr_restore(intr_flag); // 恢复中断
     }
 }
 
@@ -520,21 +528,21 @@ load_icode(unsigned char *binary, size_t size) {
 
     int ret = -E_NO_MEM;
     struct mm_struct *mm;
-    //(1) create a new mm for current process
+    //(1) 为当前进程创建一个新的内存管理（mm）
     if ((mm = mm_create()) == NULL) {
         goto bad_mm;
     }
-    //(2) create a new PDT, and mm->pgdir= kernel virtual addr of PDT
+    //(2) 创建一个新的页目录表（PDT），并将 mm->pgdir 设置为该页目录表在内核虚拟地址空间中的地址
     if (setup_pgdir(mm) != 0) {
         goto bad_pgdir_cleanup_mm;
     }
-    //(3) copy TEXT/DATA section, build BSS parts in binary to memory space of process
+    //(3) 将 TEXT/DATA 段复制到进程的内存空间中，并在二进制文件中构建 BSS 段
     struct Page *page;
-    //(3.1) get the file header of the bianry program (ELF format)
+    //(3.1) 获取二进制程序的文件头（ELF格式）
     struct elfhdr *elf = (struct elfhdr *)binary;
-    //(3.2) get the entry of the program section headers of the bianry program (ELF format)
+    //(3.2) 获取二进制程序的程序段头表的入口（ELF格式）
     struct proghdr *ph = (struct proghdr *)(binary + elf->e_phoff);
-    //(3.3) This program is valid?
+    //(3.3) 这个程序有效吗？
     if (elf->e_magic != ELF_MAGIC) {
         ret = -E_INVAL_ELF;
         goto bad_elf_cleanup_pgdir;
@@ -543,7 +551,7 @@ load_icode(unsigned char *binary, size_t size) {
     uint32_t vm_flags, perm;
     struct proghdr *ph_end = ph + elf->e_phnum;
     for (; ph < ph_end; ph ++) {
-    //(3.4) find every program section headers
+    //(3.4) 找到每个程序段头
         if (ph->p_type != ELF_PT_LOAD) {
             continue ;
         }
@@ -554,12 +562,12 @@ load_icode(unsigned char *binary, size_t size) {
         if (ph->p_filesz == 0) {
             // continue ;
         }
-    //(3.5) call mm_map fun to setup the new vma ( ph->p_va, ph->p_memsz)
+    //(3.5) 调用 mm_map 函数来设置新的 vma (ph->p_va, ph->p_memsz)
         vm_flags = 0, perm = PTE_U | PTE_V;
         if (ph->p_flags & ELF_PF_X) vm_flags |= VM_EXEC;
         if (ph->p_flags & ELF_PF_W) vm_flags |= VM_WRITE;
         if (ph->p_flags & ELF_PF_R) vm_flags |= VM_READ;
-        // modify the perm bits here for RISC-V
+        // 修改 RISC-V 的 perm 位
         if (vm_flags & VM_READ) perm |= PTE_R;
         if (vm_flags & VM_WRITE) perm |= (PTE_W | PTE_R);
         if (vm_flags & VM_EXEC) perm |= PTE_X;
@@ -572,9 +580,9 @@ load_icode(unsigned char *binary, size_t size) {
 
         ret = -E_NO_MEM;
 
-     //(3.6) alloc memory, and  copy the contents of every program section (from, from+end) to process's memory (la, la+end)
+     //(3.6) 分配内存，并将每个程序段的内容 (from, from+end) 复制到进程的内存 (la, la+end)
         end = ph->p_va + ph->p_filesz;
-     //(3.6.1) copy TEXT/DATA section of bianry program
+     //(3.6.1) 复制二进制程序的 TEXT/DATA 段
         while (start < end) {
             if ((page = pgdir_alloc_page(mm->pgdir, la, perm)) == NULL) {
                 goto bad_cleanup_mmap;
@@ -587,7 +595,7 @@ load_icode(unsigned char *binary, size_t size) {
             start += size, from += size;
         }
 
-      //(3.6.2) build BSS section of binary program
+      //(3.6.2) 构建二进制程序的 BSS 段
         end = ph->p_va + ph->p_memsz;
         if (start < la) {
             /* ph->p_memsz == ph->p_filesz */
@@ -614,7 +622,7 @@ load_icode(unsigned char *binary, size_t size) {
             start += size;
         }
     }
-    //(4) build user stack memory
+    //(4) 构建用户栈内存
     vm_flags = VM_READ | VM_WRITE | VM_STACK;
     if ((ret = mm_map(mm, USTACKTOP - USTACKSIZE, USTACKSIZE, vm_flags, NULL)) != 0) {
         goto bad_cleanup_mmap;
@@ -624,13 +632,13 @@ load_icode(unsigned char *binary, size_t size) {
     assert(pgdir_alloc_page(mm->pgdir, USTACKTOP-3*PGSIZE , PTE_USER) != NULL);
     assert(pgdir_alloc_page(mm->pgdir, USTACKTOP-4*PGSIZE , PTE_USER) != NULL);
     
-    //(5) set current process's mm, sr3, and set CR3 reg = physical addr of Page Directory
+    //(5) 设置当前进程的 mm, sr3，并将 CR3 寄存器设置为页目录的物理地址
     mm_count_inc(mm);
     current->mm = mm;
     current->cr3 = PADDR(mm->pgdir);
     lcr3(PADDR(mm->pgdir));
 
-    //(6) setup trapframe for user environment
+    //(6) 设置用户环境的trapframe
     struct trapframe *tf = current->tf;
     // Keep sstatus
     uintptr_t sstatus = tf->status;
@@ -643,7 +651,9 @@ load_icode(unsigned char *binary, size_t size) {
      *          tf->status should be appropriate for user program (the value of sstatus)
      *          hint: check meaning of SPP, SPIE in SSTATUS, use them by SSTATUS_SPP, SSTATUS_SPIE(defined in risv.h)
      */
-
+    tf->gpr.sp = USTACKTOP;// 设置用户栈顶指针
+    tf->epc = elf->e_entry;// 设置程序入口点
+    tf->status = (sstatus & ~SSTATUS_SPP) | SSTATUS_SPIE;// 设置状态寄存器，清除SPP位并设置SPIE位
 
     ret = 0;
 out:
