@@ -458,9 +458,7 @@ do_pgfault(struct mm_struct *mm, uint_t error_code, uintptr_t addr) {
             //map of phy addr <--->
             //logical addr
             //(3) make the page swappable.
-            if((ret = swap_in(mm, addr, &page)) != 0) {// 从磁盘中读取页面内容到内存
-                goto failed;
-            }
+            swap_in(mm, addr, &page);// 从磁盘中读取页面内容到内存
             page_insert(mm->pgdir, page, addr, perm);// 建立物理地址与逻辑地址的映射
             swap_map_swappable(mm, addr, page, 1);// 设置页面可交换
             page->pra_vaddr = addr;

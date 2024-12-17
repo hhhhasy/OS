@@ -103,18 +103,18 @@ alloc_proc(void) {
      *       uint32_t flags;                             // Process flag
      *       char name[PROC_NAME_LEN + 1];               // Process name
      */
-        proc->cr3=boot_cr3;
-        proc->tf=NULL;
-        proc->state=PROC_UNINIT;
-        proc->pid=-1;
-        proc->runs=0;
-        proc->kstack=0;
-        proc->need_resched=0;
-        proc->parent=NULL;
-        proc->mm=NULL;
-        proc->flags=0;
-        memset(&(proc->context), 0, sizeof(struct context));
-        memset(proc->name, 0, PROC_NAME_LEN);
+        proc->state = PROC_UNINIT;  // 设置进程为未初始化状态
+        proc->pid = -1;             // 未初始化的的进程id为-1
+        proc->runs = 0;             // 初始化时间片
+        proc->kstack = 0;           // 内存栈的地址
+        proc->need_resched = 0;     // 不需要调度
+        proc->parent = NULL;        // 父节点设为空
+        proc->mm = NULL;            // 虚拟内存为空
+        memset(&(proc->context), 0, sizeof(struct context)); // 上下文的初始化
+        proc->tf = NULL;            // 中断帧指针置为空
+        proc->cr3 = boot_cr3;       // 页目录设为内核页目录表的基址
+        proc->flags = 0;            // 标志位
+        memset(proc->name, 0, PROC_NAME_LEN); // 进程名初始化为空
 
      //LAB5 YOUR CODE : (update LAB4 steps)
      /*
