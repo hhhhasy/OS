@@ -315,6 +315,7 @@ setup_pgdir(struct mm_struct *mm) {
 }
 
 // put_pgdir - free the memory space of PDT
+//释放页目录表（PDT）的内存空间
 static void
 put_pgdir(struct mm_struct *mm) {
     free_page(kva2page(mm->pgdir));
@@ -327,20 +328,27 @@ copy_mm(uint32_t clone_flags, struct proc_struct *proc) {
     struct mm_struct *mm, *oldmm = current->mm;
 
     /* current is a kernel thread */
+    //检查当前进程是否是一个内核线程
+    //如果是内核线程，说明它没有用户空间的内存管理结构，因此直接返回，不需要进行进一步的处理。
     if (oldmm == NULL) {
         return 0;
     }
+    //表示需要共享内存
+    //直接将子进程的 mm 指向当前进程的 mm
     if (clone_flags & CLONE_VM) {
         mm = oldmm;
         goto good_mm;
     }
     int ret = -E_NO_MEM;
+    //复制内存，创建一个新的mm_struct
     if ((mm = mm_create()) == NULL) {
         goto bad_mm;
     }
+    //分配新的页目录
     if (setup_pgdir(mm) != 0) {
         goto bad_pgdir_cleanup_mm;
     }
+    //锁定当前进程的mm
     lock_mm(oldmm);
     {
         ret = dup_mmap(mm, oldmm);
@@ -385,10 +393,16 @@ copy_thread(struct proc_struct *proc, uintptr_t esp, struct trapframe *tf) {
  * @stack:       the parent's user stack pointer. if stack==0, It means to fork a kernel thread.
  * @tf:          the trapframe info, which will be copied to child process's proc->tf
  */
+/* do_fork - 为新的子进程创建父进程
+ * @clone_flags: 用于指导如何克隆子进程
+ * @stack: 父进程的用户栈指针。如果stack==0，表示创建一个内核线程。
+ * @tf: 将被复制到子进程的proc->tf的trapframe信息
+ */
 int
 do_fork(uint32_t clone_flags, uintptr_t stack, struct trapframe *tf) {
     int ret = -E_NO_FREE_PROC;
     struct proc_struct *proc;
+    //检查当前进程数量是否已经达到最大值MAX_PROCESS
     if (nr_process >= MAX_PROCESS) {
         goto fork_out;
     }
@@ -522,13 +536,14 @@ do_exit(int error_code) {
  */
 static int
 load_icode(unsigned char *binary, size_t size) {
+    //当前内存空间必须为空
     if (current->mm != NULL) {
         panic("load_icode: current->mm must be empty.\n");
     }
 
     int ret = -E_NO_MEM;
     struct mm_struct *mm;
-    //(1) 为当前进程创建一个新的内存管理（mm）
+    //（1）为进程创建新的内存管理空间
     if ((mm = mm_create()) == NULL) {
         goto bad_mm;
     }
@@ -571,6 +586,7 @@ load_icode(unsigned char *binary, size_t size) {
         if (vm_flags & VM_READ) perm |= PTE_R;
         if (vm_flags & VM_WRITE) perm |= (PTE_W | PTE_R);
         if (vm_flags & VM_EXEC) perm |= PTE_X;
+        //使用mm_map建立合法空间
         if ((ret = mm_map(mm, ph->p_va, ph->p_memsz, vm_flags, NULL)) != 0) {
             goto bad_cleanup_mmap;
         }
@@ -624,9 +640,12 @@ load_icode(unsigned char *binary, size_t size) {
     }
     //(4) 构建用户栈内存
     vm_flags = VM_READ | VM_WRITE | VM_STACK;
+    //调用mm_mmap函数建立用户栈的vma结构
+    //用户栈的位置在用户虚空间的顶端，大小为256个页，1MB，分配一定数量的物理内存
     if ((ret = mm_map(mm, USTACKTOP - USTACKSIZE, USTACKSIZE, vm_flags, NULL)) != 0) {
         goto bad_cleanup_mmap;
     }
+    //建立栈的虚地址-物理地址映射关系
     assert(pgdir_alloc_page(mm->pgdir, USTACKTOP-PGSIZE , PTE_USER) != NULL);
     assert(pgdir_alloc_page(mm->pgdir, USTACKTOP-2*PGSIZE , PTE_USER) != NULL);
     assert(pgdir_alloc_page(mm->pgdir, USTACKTOP-3*PGSIZE , PTE_USER) != NULL);
@@ -670,6 +689,8 @@ bad_mm:
 
 // do_execve - call exit_mmap(mm)&put_pgdir(mm) to reclaim memory space of current process
 //           - call load_icode to setup new memory space accroding binary prog.
+// do_execve - 调用exit_mmap(mm)和put_pgdir(mm)以回收当前进程的内存空间
+//           - 调用load_icode以根据二进制程序设置新的内存空间
 int
 do_execve(const char *name, size_t len, unsigned char *binary, size_t size) {
     struct mm_struct *mm = current->mm;
@@ -684,17 +705,23 @@ do_execve(const char *name, size_t len, unsigned char *binary, size_t size) {
     memset(local_name, 0, sizeof(local_name));
     memcpy(local_name, name, len);
 
+    //清空用户态内存空间
     if (mm != NULL) {
         cputs("mm != NULL");
+        //指定页表地址为ucure内核页表
         lcr3(boot_cr3);
         if (mm_count_dec(mm) == 0) {
+            //退出进程释放内存映射空间
             exit_mmap(mm);
+            //释放页目录表
             put_pgdir(mm);
+            //释放mm_struct
             mm_destroy(mm);
         }
         current->mm = NULL;
     }
     int ret;
+    //加载应用程序执行码到当前进程的新创建的用户态虚拟空间
     if ((ret = load_icode(binary, size)) != 0) {
         goto execve_exit;
     }
@@ -798,6 +825,8 @@ static int
 kernel_execve(const char *name, unsigned char *binary, size_t size) {
     int64_t ret=0, len = strlen(name);
  //   ret = do_execve(name, len, binary, size);
+ //ebreak是特权态到特权态的中断
+ //如果a7等于10，是在内核态模拟的syscall
     asm volatile(
         "li a0, %1\n"
         "lw a1, %2\n"

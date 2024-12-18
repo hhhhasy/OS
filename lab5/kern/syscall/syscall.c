@@ -26,6 +26,7 @@ sys_wait(uint64_t arg[]) {
     return do_wait(pid, store);
 }
 
+//执行
 static int
 sys_exec(uint64_t arg[]) {
     const char *name = (const char *)arg[0];
@@ -64,6 +65,7 @@ sys_pgdir(uint64_t arg[]) {
     return 0;
 }
 
+//number对应的函数
 static int (*syscalls[])(uint64_t arg[]) = {
     [SYS_exit]              sys_exit,
     [SYS_fork]              sys_fork,
@@ -82,14 +84,19 @@ void
 syscall(void) {
     struct trapframe *tf = current->tf;
     uint64_t arg[5];
+    //syscall的number是用户和操作系统的一个约定
+    //将number从a0寄存器中取出
     int num = tf->gpr.a0;
     if (num >= 0 && num < NUM_SYSCALLS) {
+        //判断number是否存在
         if (syscalls[num] != NULL) {
+            //获取参数
             arg[0] = tf->gpr.a1;
             arg[1] = tf->gpr.a2;
             arg[2] = tf->gpr.a3;
             arg[3] = tf->gpr.a4;
             arg[4] = tf->gpr.a5;
+            //系统调用
             tf->gpr.a0 = syscalls[num](arg);
             return ;
         }

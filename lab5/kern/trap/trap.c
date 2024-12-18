@@ -33,10 +33,13 @@ idt_init(void) {
     extern void __alltraps(void);
     /* Set sscratch register to 0, indicating to exception vector that we are
      * presently executing in the kernel */
+    //将sscratch寄存器设置为0，表示内核正在执行。
     write_csr(sscratch, 0);
     /* Set the exception vector address */
+    //设置异常地址
     write_csr(stvec, &__alltraps);
     /* Allow kernel to access user memory */
+    //允许内核获取用户内存
     set_csr(sstatus, SSTATUS_SUM);
 }
 
@@ -177,6 +180,7 @@ void interrupt_handler(struct trapframe *tf) {
 void kernel_execve_ret(struct trapframe *tf,uintptr_t kstacktop);
 void exception_handler(struct trapframe *tf) {
     int ret;
+    //查看是什么触发了调用
     switch (tf->cause) {
         case CAUSE_MISALIGNED_FETCH:
             cprintf("Instruction address misaligned\n");
@@ -254,12 +258,15 @@ void exception_handler(struct trapframe *tf) {
     }
 }
 
+//查看是中断还是异常
 static inline void trap_dispatch(struct trapframe* tf) {
     if ((intptr_t)tf->cause < 0) {
         // interrupts
+        //中断
         interrupt_handler(tf);
     } else {
         // exceptions
+        //异常
         exception_handler(tf);
     }
 }

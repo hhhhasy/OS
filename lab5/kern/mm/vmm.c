@@ -143,6 +143,7 @@ insert_vma_struct(struct mm_struct *mm, struct vma_struct *vma) {
 }
 
 // mm_destroy - free mm and mm internal fields
+//释放mm_struct结构及其内部字段的函数
 void
 mm_destroy(struct mm_struct *mm) {
     assert(mm_count(mm) == 0);
@@ -150,8 +151,10 @@ mm_destroy(struct mm_struct *mm) {
     list_entry_t *list = &(mm->mmap_list), *le;
     while ((le = list_next(list)) != list) {
         list_del(le);
+        //释放虚拟内存区域的内存
         kfree(le2vma(le, list_link));  //kfree vma        
     }
+    //释放整个mm结构体的内存
     kfree(mm); //kfree mm
     mm=NULL;
 }
@@ -187,21 +190,27 @@ out:
     return ret;
 }
 
+//复制一个进程的内存映射表到另一个进程
 int
 dup_mmap(struct mm_struct *to, struct mm_struct *from) {
     assert(to != NULL && from != NULL);
     list_entry_t *list = &(from->mmap_list), *le = list;
+    //遍历list
     while ((le = list_prev(le)) != list) {
         struct vma_struct *vma, *nvma;
         vma = le2vma(le, list_link);
+        //创建新的vma
         nvma = vma_create(vma->vm_start, vma->vm_end, vma->vm_flags);
         if (nvma == NULL) {
             return -E_NO_MEM;
         }
 
+        //插入vma
         insert_vma_struct(to, nvma);
 
-        bool share = 0;
+        // 实现COW：设置共享标志，启用页面共享
+        bool share = 1;
+        //调用copy_range函数复制虚拟内存区域中的具体内容
         if (copy_range(to->pgdir, from->pgdir, vma->vm_start, vma->vm_end, share) != 0) {
             return -E_NO_MEM;
         }
@@ -216,10 +225,12 @@ exit_mmap(struct mm_struct *mm) {
     list_entry_t *list = &(mm->mmap_list), *le = list;
     while ((le = list_next(le)) != list) {
         struct vma_struct *vma = le2vma(le, list_link);
+        //取消指定范围内的映射关系
         unmap_range(pgdir, vma->vm_start, vma->vm_end);
     }
     while ((le = list_next(le)) != list) {
         struct vma_struct *vma = le2vma(le, list_link);
+        //处理指定范围内的退出操作
         exit_range(pgdir, vma->vm_start, vma->vm_end);
     }
 }
@@ -372,45 +383,39 @@ check_pgfault(void) {
 //page fault number
 volatile unsigned int pgfault_num=0;
 
-/* do_pgfault - interrupt handler to process the page fault execption
- * @mm         : the control struct for a set of vma using the same PDT
- * @error_code : the error code recorded in trapframe->tf_err which is setted by x86 hardware
- * @addr       : the addr which causes a memory access exception, (the contents of the CR2 register)
+/* do_pgfault - 处理页面故障异常的中断处理程序
+ * @mm         : 使用相同页目录表的一组vma的控制结构
+ * @error_code : 在trapframe->tf_err中记录的错误代码，由硬件设置
+ * @addr       : 导致内存访问异常的地址（CR2寄存器的内容）
  *
- * CALL GRAPH: trap--> trap_dispatch-->pgfault_handler-->do_pgfault
- * The processor provides ucore's do_pgfault function with two items of information to aid in diagnosing
- * the exception and recovering from it.
- *   (1) The contents of the CR2 register. The processor loads the CR2 register with the
- *       32-bit linear address that generated the exception. The do_pgfault fun can
- *       use this address to locate the corresponding page directory and page-table
- *       entries.
- *   (2) An error code on the kernel stack. The error code for a page fault has a format different from
- *       that for other exceptions. The error code tells the exception handler three things:
- *         -- The P flag   (bit 0) indicates whether the exception was due to a not-present page (0)
- *            or to either an access rights violation or the use of a reserved bit (1).
- *         -- The W/R flag (bit 1) indicates whether the memory access that caused the exception
- *            was a read (0) or write (1).
- *         -- The U/S flag (bit 2) indicates whether the processor was executing at user mode (1)
- *            or supervisor mode (0) at the time of the exception.
+ * 调用图: trap--> trap_dispatch-->pgfault_handler-->do_pgfault
+ * 处理器为ucore的do_pgfault函数提供两项信息，以帮助诊断和恢复异常：
+ *   (1) CR2寄存器的内容。处理器将产生异常的32位线性地址加载到CR2寄存器中。
+ *       do_pgfault函数可以使用此地址来定位相应的页目录和页表项。
+ *   (2) 内核栈上的错误代码。页面故障的错误代码格式与其他异常不同。
+ *       错误代码向异常处理程序提供三个信息：
+ *         -- P标志   (位0) 指示异常是由于页面不存在(0)还是由于访问权限违规或使用保留位(1)。
+ *         -- W/R标志 (位1) 指示导致异常的内存访问是读取(0)还是写入(1)。
+ *         -- U/S标志 (位2) 指示处理器在异常发生时是在用户模式(1)还是监督模式(0)下执行。
  */
 int
 do_pgfault(struct mm_struct *mm, uint_t error_code, uintptr_t addr) {
     int ret = -E_INVAL;
-    //try to find a vma which include addr
+    // 尝试找到一个包含 addr 的 vma
     struct vma_struct *vma = find_vma(mm, addr);
 
     pgfault_num++;
-    //If the addr is in the range of a mm's vma?
+    // 如果 addr 在 mm 的 vma 范围内？
     if (vma == NULL || vma->vm_start > addr) {
         cprintf("not valid addr %x, and  can not find it in vma\n", addr);
         goto failed;
     }
 
-    /* IF (write an existed addr ) OR
-     *    (write an non_existed addr && addr is writable) OR
-     *    (read  an non_existed addr && addr is readable)
-     * THEN
-     *    continue process
+    /* 如果 (写入一个已存在的地址) 或
+     *    (写入一个不存在的地址且地址是可写的) 或
+     *    (读取一个不存在的地址且地址是可读的)
+     * 那么
+     *    继续处理
      */
     uint32_t perm = PTE_U;
     if (vma->vm_flags & VM_WRITE) {
@@ -422,18 +427,27 @@ do_pgfault(struct mm_struct *mm, uint_t error_code, uintptr_t addr) {
 
     pte_t *ptep=NULL;
   
-    // try to find a pte, if pte's PT(Page Table) isn't existed, then create a PT.
-    // (notice the 3th parameter '1')
+    // 尝试找到一个页表项(pte)，如果页表项的页表(PT)不存在，则创建一个页表。
+    // (注意第三个参数 '1')
     if ((ptep = get_pte(mm->pgdir, addr, 1)) == NULL) {
         cprintf("get_pte in do_pgfault failed\n");
         goto failed;
     }
     
-    if (*ptep == 0) { // if the phy addr isn't exist, then alloc a page & map the phy addr with logical addr
+    if (*ptep == 0) { // 如果物理地址不存在，则分配一个页面并将物理地址与逻辑地址映射
         if (pgdir_alloc_page(mm->pgdir, addr, perm) == NULL) {
             cprintf("pgdir_alloc_page in do_pgfault failed\n");
             goto failed;
         }
+    // 实现COW: 写入时复制
+    // 事实上我们将之前copy_range过程放在了这里执行，只有必须执行时才执行该过程
+    // 判断条件: 1. 错误码中P=1，W/R=1  2. 页表项可读，不可写
+    } else if ((error_code & 3 == 3) && (*ptep & PTE_V) && !(*ptep & PTE_W)) {
+        struct Page *page = pte2page(*ptep);
+        struct Page *npage = pgdir_alloc_page(mm->pgdir, addr, perm);
+        void *src_kvaddr = page2kva(page);
+        void *dst_kvaddr = page2kva(npage);
+        memcpy(dst_kvaddr, src_kvaddr, PGSIZE);
     } else {
         /*LAB3 EXERCISE 3: YOUR CODE
         * 请你根据以下信息提示，补充函数
