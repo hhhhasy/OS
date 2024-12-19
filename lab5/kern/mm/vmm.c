@@ -9,6 +9,37 @@
 #include <swap.h>
 #include <kmalloc.h>
 
+/**
+ * @file vmm.c
+ * @brief 虚拟内存管理模块 (Virtual Memory Management Module)
+ *
+ * @details 虚拟内存管理设计包含两个主要部分:
+ * 1. mm_struct (mm) - 内存管理器
+ *    - 管理具有相同页目录表的连续虚拟内存区域集合
+ * 2. vma_struct (vma) - 虚拟内存区域
+ *    - 表示一个连续的虚拟内存区域
+ *    - 在mm中以线性链表和红黑树形式组织
+ *
+ * @section mm相关函数
+ * 全局函数:
+ * - mm_create(): 创建内存管理器
+ * - mm_destroy(): 销毁内存管理器
+ * - do_pgfault(): 处理页面故障
+ *
+ * @section vma相关函数
+ * 全局函数:
+ * - vma_create(): 创建虚拟内存区域
+ * - insert_vma_struct(): 插入虚拟内存区域
+ * - find_vma(): 查找虚拟内存区域
+ *
+ * 局部函数:
+ * - check_vma_overlap(): 检查虚拟内存区域重叠
+ *
+ * @section 正确性检查函数
+ * - check_vmm(): 检查虚拟内存管理
+ * - check_vma_struct(): 检查虚拟内存区域结构
+ * - check_pgfault(): 检查页面故障处理
+ */
 /* 
   vmm design include two parts: mm_struct (mm) & vma_struct (vma)
   mm is the memory manager for the set of continuous virtual memory  
@@ -159,30 +190,42 @@ mm_destroy(struct mm_struct *mm) {
     mm=NULL;
 }
 
+// mm_map - 在指定的内存管理器中建立一段虚拟内存映射
+// @mm: 内存管理器结构体
+// @addr: 待映射的起始地址
+// @len: 映射的长度
+// @vm_flags: 虚拟内存区域的标志位
+// @vma_store: 存储新创建的vma结构体的指针的指针
 int
 mm_map(struct mm_struct *mm, uintptr_t addr, size_t len, uint32_t vm_flags,
-       struct vma_struct **vma_store) {
+    struct vma_struct **vma_store) {
+    // 将地址按页面大小对齐
     uintptr_t start = ROUNDDOWN(addr, PGSIZE), end = ROUNDUP(addr + len, PGSIZE);
+    // 检查地址范围是否在用户空间内
     if (!USER_ACCESS(start, end)) {
-        return -E_INVAL;
+     return -E_INVAL;
     }
 
     assert(mm != NULL);
 
     int ret = -E_INVAL;
 
+    // 检查是否与现有的虚拟内存区域重叠
     struct vma_struct *vma;
     if ((vma = find_vma(mm, start)) != NULL && end > vma->vm_start) {
-        goto out;
+     goto out;
     }
     ret = -E_NO_MEM;
 
+    // 创建新的虚拟内存区域
     if ((vma = vma_create(start, end, vm_flags)) == NULL) {
-        goto out;
+     goto out;
     }
+    // 将新的虚拟内存区域插入到mm中
     insert_vma_struct(mm, vma);
+    // 如果需要，存储新创建的vma
     if (vma_store != NULL) {
-        *vma_store = vma;
+     *vma_store = vma;
     }
     ret = 0;
 
@@ -190,53 +233,77 @@ out:
     return ret;
 }
 
-//复制一个进程的内存映射表到另一个进程
+// dup_mmap - 复制一个进程的内存映射表到另一个进程中
+// @to: 目标内存管理器结构
+// @from: 源内存管理器结构 
 int
 dup_mmap(struct mm_struct *to, struct mm_struct *from) {
     assert(to != NULL && from != NULL);
+    // 获取源进程的内存映射链表
     list_entry_t *list = &(from->mmap_list), *le = list;
-    //遍历list
+    // 遍历源进程的所有VMA(虚拟内存区域)
     while ((le = list_prev(le)) != list) {
         struct vma_struct *vma, *nvma;
         vma = le2vma(le, list_link);
-        //创建新的vma
+        // 为目标进程创建新的VMA，继承源VMA的起始地址、结束地址和访问权限
         nvma = vma_create(vma->vm_start, vma->vm_end, vma->vm_flags);
         if (nvma == NULL) {
-            return -E_NO_MEM;
+            return -E_NO_MEM; // 内存不足，返回错误
         }
 
-        //插入vma
+        // 将新建的VMA插入到目标进程的mm中
         insert_vma_struct(to, nvma);
 
-        // 实现COW：设置共享标志，启用页面共享
+        // 实现写时复制(COW)机制：
+        // share=1表示启用页面共享，父子进程初始共享物理页面
         bool share = 1;
-        //调用copy_range函数复制虚拟内存区域中的具体内容
+        // 复制源VMA到目标VMA的具体内容
+        // 如果复制失败则返回内存不足错误
         if (copy_range(to->pgdir, from->pgdir, vma->vm_start, vma->vm_end, share) != 0) {
             return -E_NO_MEM;
         }
     }
-    return 0;
+    return 0; // 复制成功
 }
 
+/**
+ * @brief 清理内存映射
+ * 
+ * @param mm 内存管理器结构体指针
+ * 
+ * @details 当进程退出时调用此函数清理其虚拟内存映射。
+ * 首先取消页表映射关系，然后处理相关的退出操作。
+ */
 void
 exit_mmap(struct mm_struct *mm) {
     assert(mm != NULL && mm_count(mm) == 0);
     pde_t *pgdir = mm->pgdir;
     list_entry_t *list = &(mm->mmap_list), *le = list;
+    // 第一次遍历：取消所有VMA的页表映射
     while ((le = list_next(le)) != list) {
         struct vma_struct *vma = le2vma(le, list_link);
-        //取消指定范围内的映射关系
         unmap_range(pgdir, vma->vm_start, vma->vm_end);
     }
+    // 第二次遍历：执行清理操作
     while ((le = list_next(le)) != list) {
         struct vma_struct *vma = le2vma(le, list_link);
-        //处理指定范围内的退出操作
         exit_range(pgdir, vma->vm_start, vma->vm_end);
     }
 }
 
+/**
+ * @brief 从用户空间复制数据到内核空间
+ * 
+ * @param mm 内存管理器结构体指针
+ * @param dst 目标地址（内核空间）
+ * @param src 源地址（用户空间）
+ * @param len 要复制的字节数
+ * @param writable 是否可写
+ * @return bool 复制是否成功
+ */
 bool
 copy_from_user(struct mm_struct *mm, void *dst, const void *src, size_t len, bool writable) {
+    // 检查用户空间内存是否可访问
     if (!user_mem_check(mm, (uintptr_t)src, len, writable)) {
         return 0;
     }
@@ -244,8 +311,18 @@ copy_from_user(struct mm_struct *mm, void *dst, const void *src, size_t len, boo
     return 1;
 }
 
+/**
+ * @brief 从内核空间复制数据到用户空间
+ * 
+ * @param mm 内存管理器结构体指针
+ * @param dst 目标地址（用户空间）
+ * @param src 源地址（内核空间）
+ * @param len 要复制的字节数
+ * @return bool 复制是否成功
+ */
 bool
 copy_to_user(struct mm_struct *mm, void *dst, const void *src, size_t len) {
+    // 检查用户空间内存是否可写
     if (!user_mem_check(mm, (uintptr_t)dst, len, 1)) {
         return 0;
     }
@@ -404,116 +481,121 @@ do_pgfault(struct mm_struct *mm, uint_t error_code, uintptr_t addr) {
     // 尝试找到一个包含 addr 的 vma
     struct vma_struct *vma = find_vma(mm, addr);
 
-    pgfault_num++;
-    // 如果 addr 在 mm 的 vma 范围内？
+    pgfault_num++; // 页错误计数器增加
+    
+    // 检查地址是否在任何VMA范围内
     if (vma == NULL || vma->vm_start > addr) {
         cprintf("not valid addr %x, and  can not find it in vma\n", addr);
         goto failed;
     }
 
-    /* 如果 (写入一个已存在的地址) 或
-     *    (写入一个不存在的地址且地址是可写的) 或
-     *    (读取一个不存在的地址且地址是可读的)
-     * 那么
-     *    继续处理
+    /* 检查访问权限:
+     * 1. 写入一个已存在的地址
+     * 2. 写入一个不存在但可写的地址
+     * 3. 读取一个不存在但可读的地址
      */
-    uint32_t perm = PTE_U;
+    uint32_t perm = PTE_U; // 设置基本用户访问权限
     if (vma->vm_flags & VM_WRITE) {
-        perm |= READ_WRITE;//标记页面可读写
+        perm |= READ_WRITE; // 如果VMA可写，添加写权限
     }
-    addr = ROUNDDOWN(addr, PGSIZE);
+    addr = ROUNDDOWN(addr, PGSIZE); // 将地址向下对齐到页面边界
 
     ret = -E_NO_MEM;
 
     pte_t *ptep=NULL;
   
-    // 尝试找到一个页表项(pte)，如果页表项的页表(PT)不存在，则创建一个页表。
-    // (注意第三个参数 '1')
+    // 获取或创建页表项
     if ((ptep = get_pte(mm->pgdir, addr, 1)) == NULL) {
         cprintf("get_pte in do_pgfault failed\n");
         goto failed;
     }
     
-    if (*ptep == 0) { // 如果物理地址不存在，则分配一个页面并将物理地址与逻辑地址映射
+    if (*ptep == 0) { // 如果页表项不存在
+        // 分配新的物理页面并建立映射
         if (pgdir_alloc_page(mm->pgdir, addr, perm) == NULL) {
             cprintf("pgdir_alloc_page in do_pgfault failed\n");
             goto failed;
         }
     
-    } else {
+    } else { // 页表项存在
         struct Page *page=NULL;
-        // 如果当前页错误的原因是写入了只读页面
+        // 处理写时复制情况
         if (*ptep & PTE_V) {
-            // 写时复制：复制一块内存给当前进程
             cprintf("\n\nCOW: ptep 0x%x, pte 0x%x\n",ptep, *ptep);
-            // 原先所使用的只读物理页
-            page = pte2page(*ptep);
-            // 如果该物理页面被多个进程引用
-            if(page_ref(page) > 1)
-            {
-                // 释放当前PTE的引用并分配一个新物理页
+            page = pte2page(*ptep); // 获取物理页面
+            
+            // 如果页面被多个进程共享
+            if(page_ref(page) > 1) {
+                // 创建新的物理页面副本
                 struct Page* newPage = pgdir_alloc_page(mm->pgdir, addr, perm);
                 void * kva_src = page2kva(page);
                 void * kva_dst = page2kva(newPage);
-                // 拷贝数据
-                memcpy(kva_dst, kva_src, PGSIZE);
-            }
-            // 如果该物理页面只被当前进程所引用,即page_ref等1
-            else
-                // 则可以直接执行page_insert，保留当前物理页并重设其PTE权限。
+                memcpy(kva_dst, kva_src, PGSIZE); // 复制页面内容
+            } else {
+                // 如果页面只被一个进程使用，直接更新权限
                 page_insert(mm->pgdir, page, addr, perm);
-        }
-        else
-        {
-            // 如果swap已经初始化完成
+            }
+        } else {
+            // 处理页面置换
             if(swap_init_ok) {
-                // 将目标数据加载到某块新的物理页中。
-                // 该物理页可能是尚未分配的物理页，也可能是从别的已分配物理页中取的
+                // 从磁盘加载页面
                 if ((ret = swap_in(mm, addr, &page)) != 0) {
                     cprintf("swap_in in do_pgfault failed\n");
                     goto failed;
                 }
-                // 将该物理页与对应的虚拟地址关联，同时设置页表。
+                // 建立物理页面映射
                 page_insert(mm->pgdir, page, addr, perm);
-            }
-            else {
+            } else {
                 cprintf("no swap_init_ok but ptep is %x, failed\n",*ptep);
                 goto failed;
             }
         }
-        // 当前缺失的页已经加载回内存中，所以设置当前页为可swap。
+        // 标记页面为可交换
         swap_map_swappable(mm, addr, page, 1);
         page->pra_vaddr = addr;
    }
-    ret = 0;
+   ret = 0;
 failed:
     return ret;
 }
 
+/**
+ * @brief 检查用户内存访问的合法性
+ * @param mm 内存管理器结构体指针 
+ * @param addr 待检查的起始地址
+ * @param len 待检查的长度
+ * @param write 是否为写访问
+ * @return bool 如果访问合法返回1,否则返回0
+ */
 bool
 user_mem_check(struct mm_struct *mm, uintptr_t addr, size_t len, bool write) {
-    if (mm != NULL) {
+    if (mm != NULL) { // 如果mm不为空,说明是用户进程
+        // 检查访问地址是否在用户空间范围内
         if (!USER_ACCESS(addr, addr + len)) {
             return 0;
         }
         struct vma_struct *vma;
         uintptr_t start = addr, end = addr + len;
         while (start < end) {
+            // 查找包含start地址的VMA
             if ((vma = find_vma(mm, start)) == NULL || start < vma->vm_start) {
-                return 0;
+                return 0; // 未找到VMA或地址在VMA之前,访问非法
             }
+            // 检查访问权限
             if (!(vma->vm_flags & ((write) ? VM_WRITE : VM_READ))) {
-                return 0;
+                return 0; // 权限不足
             }
+            // 对栈区的特殊检查
             if (write && (vma->vm_flags & VM_STACK)) {
-                if (start < vma->vm_start + PGSIZE) { //check stack start & size
+                if (start < vma->vm_start + PGSIZE) { // 检查栈的起始位置和大小
                     return 0;
                 }
             }
-            start = vma->vm_end;
+            start = vma->vm_end; // 移动到下一个VMA
         }
-        return 1;
+        return 1; // 所有检查都通过
     }
+    // 如果mm为空,说明是内核访问,检查是否在内核空间
     return KERN_ACCESS(addr, addr + len);
 }
 

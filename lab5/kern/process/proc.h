@@ -7,12 +7,12 @@
 #include <memlayout.h>
 
 
-// process's state in his life cycle
+// 进程在其生命周期中的状态
 enum proc_state {
-    PROC_UNINIT = 0,  // uninitialized
-    PROC_SLEEPING,    // sleeping
-    PROC_RUNNABLE,    // runnable(maybe running)
-    PROC_ZOMBIE,      // almost dead, and wait parent proc to reclaim his resource
+    PROC_UNINIT = 0,  // 未初始化
+    PROC_SLEEPING,    // 睡眠中
+    PROC_RUNNABLE,    // 可运行(可能正在运行)
+    PROC_ZOMBIE,      // 僵尸状态，等待父进程回收其资源
 };
 
 struct context {
@@ -32,42 +32,48 @@ struct context {
     uintptr_t s11;
 };
 
-#define PROC_NAME_LEN               15
-#define MAX_PROCESS                 4096
-#define MAX_PID                     (MAX_PROCESS * 2)
+#define PROC_NAME_LEN               15          // 进程名字的最大长度
+#define MAX_PROCESS                 4096        // 系统中最大进程数量
+#define MAX_PID                     (MAX_PROCESS * 2)    // 系统中最大的进程ID号
 
-extern list_entry_t proc_list;
+extern list_entry_t proc_list;       // 进程链表
 
 struct proc_struct {
-    enum proc_state state;                      // Process state
-    int pid;                                    // Process ID
-    int runs;                                   // the running times of Proces
-    uintptr_t kstack;                           // Process kernel stack
-    volatile bool need_resched;                 // bool value: need to be rescheduled to release CPU?
-    struct proc_struct *parent;                 // the parent process
-    struct mm_struct *mm;                       // Process's memory management field
-    struct context context;                     // Switch here to run process
-    struct trapframe *tf;                       // Trap frame for current interrupt
-    uintptr_t cr3;                              // CR3 register: the base addr of Page Directroy Table(PDT)
-    uint32_t flags;                             // Process flag
-    char name[PROC_NAME_LEN + 1];               // Process name
-    list_entry_t list_link;                     // Process link list 
-    list_entry_t hash_link;                     // Process hash list
-    int exit_code;                              // exit code (be sent to parent proc)
-    uint32_t wait_state;                        // waiting state
-    struct proc_struct *cptr, *yptr, *optr;     // relations between processes
+    enum proc_state state;           // 进程状态
+    int pid;                         // 进程ID
+    int runs;                        // 进程运行次数
+    uintptr_t kstack;               // 进程的内核栈
+    volatile bool need_resched;      // 布尔值：是否需要重新调度以释放CPU？
+    struct proc_struct *parent;      // 父进程
+    struct mm_struct *mm;            // 进程的内存管理字段
+    struct context context;          // 进程上下文，用于进程切换
+    struct trapframe *tf;            // 中断帧，保存中断时的状态
+    uintptr_t cr3;                  // CR3寄存器：页目录表的基地址
+    uint32_t flags;                 // 进程标志
+    char name[PROC_NAME_LEN + 1];   // 进程名称
+    list_entry_t list_link;         // 进程链表节点 
+    list_entry_t hash_link;         // 进程哈希表节点
+    int exit_code;                  // 退出码（发送给父进程）
+    uint32_t wait_state;            // 等待状态
+    struct proc_struct *cptr, *yptr, *optr;  // 进程间关系：子进程、同级younger进程、同级older进程
 };
 
-#define PF_EXITING                  0x00000001      // getting shutdown
+#define PF_EXITING                  0x00000001      // 进程正在退出
 
-#define WT_CHILD                    (0x00000001 | WT_INTERRUPTED)
-#define WT_INTERRUPTED               0x80000000                    // the wait state could be interrupted
+#define WT_CHILD                    (0x00000001 | WT_INTERRUPTED)  // 等待子进程
+#define WT_INTERRUPTED               0x80000000                    // 等待状态可被中断
 
 
+// 从链表元素获取对应的进程控制块指针
+// le: 链表元素指针
+// member: 链表节点在proc_struct中的字段名
 #define le2proc(le, member)         \
     to_struct((le), struct proc_struct, member)
 
-extern struct proc_struct *idleproc, *initproc, *current;
+// 重要的全局进程变量
+extern struct proc_struct *idleproc,  // 空闲进程，系统初始化时创建
+                         *initproc,   // 初始进程，系统初始化后第一个创建的用户进程
+                         *current;     // 当前正在运行的进程
 
 void proc_init(void);
 void proc_run(struct proc_struct *proc);

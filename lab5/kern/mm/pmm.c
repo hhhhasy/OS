@@ -287,69 +287,69 @@ void unmap_range(pde_t *pgdir, uintptr_t start, uintptr_t end) {
 
 //在释放虚拟地址空间时，逐级检查并释放相应的页表和页目录
 void exit_range(pde_t *pgdir, uintptr_t start, uintptr_t end) {
+    //确保起始地址和结束地址都是页对齐的，并且在用户空间范围内
     assert(start % PGSIZE == 0 && end % PGSIZE == 0);
     assert(USER_ACCESS(start, end));
 
+    //d1start是一级页目录条目的起始地址，d0start是二级页目录条目的起始地址
     uintptr_t d1start, d0start;
+    //标记是否可以释放页表和二级页目录
     int free_pt, free_pd0;
+    //页目录表和页表指针，以及页目录项
     pde_t *pd0, *pt, pde1, pde0;
+    
+    //将地址向下对齐到页目录大小(PDSIZE)和页表大小(PTSIZE)
     d1start = ROUNDDOWN(start, PDSIZE);
     d0start = ROUNDDOWN(start, PTSIZE);
+    
     do {
-        // level 1 page directory entry
-        //获得一级页目录项
+        //获取一级页目录项
         pde1 = pgdir[PDX1(d1start)];
-        // if there is a valid entry, get into level 0
-        // and try to free all page tables pointed to by
-        // all valid entries in level 0 page directory,
-        // then try to free this level 0 page directory
-        // and update level 1 entry
-        //检查是否存在有效的页目录。
-        //如果存在，获取对应的二级页表，然后尝试释放所有二级页表，并更新一级页目录项。
-        //如果所有二级页表都被释放，再尝试释放一级页目录，并更新相应的一级页目录项。
+        
+        //如果一级页目录项有效
         if (pde1&PTE_V){
+            //获取二级页目录表的内核虚拟地址
             pd0 = page2kva(pde2page(pde1));
-            // try to free all page tables
+            //假定可以释放二级页目录
             free_pd0 = 1;
+            
             do {
+                //获取二级页目录项
                 pde0 = pd0[PDX0(d0start)];
                 if (pde0&PTE_V) {
+                    //获取页表的内核虚拟地址
                     pt = page2kva(pde2page(pde0));
-                    // try to free page table
+                    //假定可以释放页表
                     free_pt = 1;
+                    //检查页表中的所有条目
                     for (int i = 0;i <NPTEENTRY;i++)
                         if (pt[i]&PTE_V){
+                            //如果存在有效条目，则不能释放页表
                             free_pt = 0;
                             break;
                         }
-                    // free it only when all entry are already invalid
+                    //如果页表中所有条目都无效，则释放该页表
                     if (free_pt) {
                         free_page(pde2page(pde0));
                         pd0[PDX0(d0start)] = 0;
                     }
                 } else
                     free_pd0 = 0;
+                //移动到下一个页表范围
                 d0start += PTSIZE;
             } while (d0start != 0 && d0start < d1start+PDSIZE && d0start < end);
-            // free level 0 page directory only when all pde0s in it are already invalid
+            
+            //如果二级页目录中所有页表都已被释放，则释放该二级页目录
             if (free_pd0) {
                 free_page(pde2page(pde1));
                 pgdir[PDX1(d1start)] = 0;
             }
         }
+        //移动到下一个页目录范围
         d1start += PDSIZE;
         d0start = d1start;
     } while (d1start != 0 && d1start < end);
 }
-/* copy_range - copy content of memory (start, end) of one process A to another
- * process B
- * @to:    the addr of process B's Page Directory
- * @from:  the addr of process A's Page Directory
- * @share: flags to indicate to dup OR share. We just use dup method, so it
- * didn't be used.
- *
- * CALL GRAPH: copy_mm-->dup_mmap-->copy_range
- */
 /* copy_range - 将进程 A 的内存内容（start 到 end）复制到进程 B
  * @to:    进程 B 的页目录地址
  * @from:  进程 A 的页目录地址
@@ -362,71 +362,54 @@ int copy_range(pde_t *to, pde_t *from, uintptr_t start, uintptr_t end,
     //断言检验start和end是否是页对齐的，该地址范围是否在用户空间内
     assert(start % PGSIZE == 0 && end % PGSIZE == 0);
     assert(USER_ACCESS(start, end));
-    // 按页单位复制内容
+
+    // 逐页复制内存内容
     do {
-        // 调用 get_pte 根据地址 start 找到进程 A 的 pte，若ptep为空，说明在源进程中没有找到对应的页表项
+        // 获取源进程中start地址对应的页表项
         pte_t *ptep = get_pte(from, start, 0), *nptep;
         if (ptep == NULL) {
-            start = ROUNDDOWN(start + PTSIZE, PTSIZE);//更新2Mib
+            // 如果页表项不存在，则跳过当前2MB的范围
+            start = ROUNDDOWN(start + PTSIZE, PTSIZE);
             continue;
         }
+
+        // 如果页表项有效
         if (*ptep & PTE_V) {
+            // 在目标进程中创建对应的页表项
             if ((nptep = get_pte(to, start, 1)) == NULL) {
                 return -E_NO_MEM;
             }
-            uint32_t perm = (*ptep & PTE_USER);//获取五个位的结果
-            // 从 ptep 获取页面
+            // 获取页面权限
+            uint32_t perm = (*ptep & PTE_USER);
+            // 获取源页面
             struct Page *page = pte2page(*ptep);
             int ret = 0;
 
-            // 实现COW：映射共享页面
+            // 处理共享页面的情况
             if (share) {	
-                // 如果选择共享，那么就将子进程的页面映射到父进程的页面上
-                // 并且将子进程和父进程的页面权限设置为只读
+                // 共享模式：将源页面映射到目标进程，并设置为只读
                 cprintf("Sharing the page 0x%x\n", page2kva(page));
                 page_insert(from, page, start, perm & (~PTE_W));
                 ret = page_insert(to, page, start, perm & (~PTE_W));
             } else {
-                // 如果不选择共享，那么就直接复制父进程的页面到子进程的页面上
+                // 复制模式：为目标进程分配新页面并复制内容
                 struct Page *npage = alloc_page();
                 assert(page != NULL);
                 assert(npage!=NULL);
 
-
-            /* LAB5:EXERCISE2 YOUR CODE
-             * replicate content of page to npage, build the map of phy addr of
-             * nage with the linear addr start
-             * 复制页的内容到npage，建立nage的物理地址与线性地址start的映射
-             *
-             * Some Useful MACROs and DEFINEs, you can use them in below
-             * implementation.
-             * MACROs or Functions:
-             *    page2kva(struct Page *page): return the kernel vritual addr of
-             * memory which page managed (SEE pmm.h)
-             *      返回页管理的内存的内核虚拟地址（查看 pmm.h）
-             *    page_insert: build the map of phy addr of an Page with the
-             * linear addr la
-             *      用线性地址la建立一个Page的物理地址映射
-             *    memcpy: typical memory copy function
-             *
-             * (1) find src_kvaddr: the kernel virtual address of page
-             * (2) find dst_kvaddr: the kernel virtual address of npage
-             * (3) memory copy from src_kvaddr to dst_kvaddr, size is PGSIZE
-             * (4) build the map of phy addr of  nage with the linear addr start
-             * (1) 找到 src_kvaddr：页的内核虚拟地址
-             * (2) 找到 dst_kvaddr：npage的内核虚拟地址
-             * (3) 从 src_kvaddr 复制到 dst_kvaddr，大小为 PGSIZE
-             * (4) 用线性地址 start 建立 nage 的物理地址映射
-             */
-                void *src_kvaddr = page2kva(page);// 获取源页面的内核虚拟地址
-                void *dst_kvaddr = page2kva(npage);// 获取目标页面的内核虚拟地址
-                memcpy(dst_kvaddr, src_kvaddr, PGSIZE);// 将源页面的内容复制到目标页面
-                ret = page_insert(to, npage, start, perm);// 将目标页面插入到目标页表中
+                // 获取源页面和目标页面的内核虚拟地址
+                void *src_kvaddr = page2kva(page);
+                void *dst_kvaddr = page2kva(npage);
+                // 复制页面内容
+                memcpy(dst_kvaddr, src_kvaddr, PGSIZE);
+                // 建立目标进程的页表映射
+                ret = page_insert(to, npage, start, perm);
             }
 
             assert(ret == 0);
         }
-        start += PGSIZE;//按页来更新
+        // 移动到下一页
+        start += PGSIZE;
     } while (start != 0 && start < end);
     return 0;
 }

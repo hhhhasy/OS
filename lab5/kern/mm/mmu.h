@@ -5,80 +5,79 @@
 #include <defs.h>
 #endif
 
-// A linear address 'la' has a three-part structure as follows:
+// 线性地址 'la' 具有如下三部分结构：
 //
 // +--------10------+-------10-------+---------12----------+
-// | Page Directory |   Page Table   | Offset within Page  |
-// |      Index     |     Index      |                     |
+// | 页目录索引     |   页表索引     | 页内偏移            |
 // +----------------+----------------+---------------------+
 //  \--- PDX(la) --/ \--- PTX(la) --/ \---- PGOFF(la) ----/
 //  \----------- PPN(la) -----------/
 //
-// The PDX, PTX, PGOFF, and PPN macros decompose linear addresses as shown.
-// To construct a linear address la from PDX(la), PTX(la), and PGOFF(la),
-// use PGADDR(PDX(la), PTX(la), PGOFF(la)).
+// PDX, PTX, PGOFF 和 PPN 宏按上述方式分解线性地址。
+// 要从 PDX(la), PTX(la) 和 PGOFF(la) 构造线性地址 la，
+// 使用 PGADDR(PDX(la), PTX(la), PGOFF(la))。
 
-// RISC-V uses 32-bit virtual address to access 34-bit physical address!
-// Sv32 page table entry:
+// RISC-V 使用 32 位虚拟地址访问 34 位物理地址！
+// Sv32 页表条目：
 // +---------12----------+--------10-------+---2----+-------8-------+
-// |       PPN[1]        |      PPN[0]     |Reserved|D|A|G|U|X|W|R|V|
+// |       PPN[1]        |      PPN[0]     |保留   |D|A|G|U|X|W|R|V|
 // +---------12----------+-----------------+--------+---------------+
 
 /*
- * RV32Sv32 page table entry:
+ * RV32Sv32 页表条目：
  * | 31 10 | 9             7 | 6 | 5 | 4  1 | 0
- *    PFN    reserved for SW   D   R   TYPE   V
+ *    PFN    保留给软件使用   D   R   类型   V
  *
- * RV64Sv39 / RV64Sv48 page table entry:
+ * RV64Sv39 / RV64Sv48 页表条目：
  * | 63           48 | 47 10 | 9             7 | 6 | 5 | 4  1 | 0
- *   reserved for HW    PFN    reserved for SW   D   R   TYPE   V
+ *   保留给硬件使用    PFN    保留给软件使用   D   R   类型   V
  */
 
-// page directory index
+// 页目录索引
 #define PDX1(la) ((((uintptr_t)(la)) >> PDX1SHIFT) & 0x1FF)
 #define PDX0(la) ((((uintptr_t)(la)) >> PDX0SHIFT) & 0x1FF)
 
-// page table index
+// 页表索引
 #define PTX(la) ((((uintptr_t)(la)) >> PTXSHIFT) & 0x1FF)
 
-// page number field of address
+// 地址的页号字段
 #define PPN(la) (((uintptr_t)(la)) >> PTXSHIFT)
 
-// offset in page
+// 页内偏移
 #define PGOFF(la) (((uintptr_t)(la)) & 0xFFF)
 
-// construct linear address from indexes and offset
+// 从索引和偏移构造线性地址
 #define PGADDR(d1, d0, t, o) ((uintptr_t)((d1) << PDX1SHIFT | (d0) << PDX0SHIFT | (t) << PTXSHIFT | (o)))
 
-// address in page table or page directory entry
+// 页表或页目录条目中的地址
 #define PTE_ADDR(pte)   (((uintptr_t)(pte) & ~0x3FF) << (PTXSHIFT - PTE_PPN_SHIFT))
 #define PDE_ADDR(pde)   PTE_ADDR(pde)
 
-/* page directory and page table constants */
-#define NPDEENTRY       512                    // page directory entries per page directory
-#define NPTEENTRY       512                    // page table entries per page table
+/* 页目录和页表常量 */
+#define NPDEENTRY       512                    // 每个页目录的页目录条目数
+#define NPTEENTRY       512                    // 每个页表的页表条目数
 
-#define PGSIZE          4096                    // bytes mapped by a page
+#define PGSIZE          4096                    // 每页映射的字节数
 #define PGSHIFT         12                      // log2(PGSIZE)
-#define PTSIZE          (PGSIZE * NPTEENTRY)    // bytes mapped by a page directory entry
+#define PTSIZE          (PGSIZE * NPTEENTRY)    // 每个页目录条目映射的字节数
 #define PTSHIFT         21                      // log2(PTSIZE)
-#define PDSIZE          (PTSIZE * NPDEENTRY)    // bytes mapped by a page directory
+#define PDSIZE          (PTSIZE * NPDEENTRY)    // 每个页目录映射的字节数
 
-#define PTXSHIFT        12                      // offset of PTX in a linear address
-#define PDX0SHIFT       21                      // offset of PDX in a linear address
+#define PTXSHIFT        12                      // 线性地址中 PTX 的偏移量
+#define PDX0SHIFT       21                      // 线性地址中 PDX 的偏移量
 #define PDX1SHIFT		30
-#define PTE_PPN_SHIFT   10                      // offset of PPN in a physical address
+#define PTE_PPN_SHIFT   10                      // 物理地址中 PPN 的偏移量
 
-// page table entry (PTE) fields
-#define PTE_V     0x001 // Valid
-#define PTE_R     0x002 // Read
-#define PTE_W     0x004 // Write
-#define PTE_X     0x008 // Execute
-#define PTE_U     0x010 // User
-#define PTE_G     0x020 // Global
-#define PTE_A     0x040 // Accessed
-#define PTE_D     0x080 // Dirty
-#define PTE_SOFT  0x300 // Reserved for Software
+// 页表条目 (PTE) 字段
+#define PTE_V     0x001 // 有效
+#define PTE_R     0x002 // 读
+#define PTE_W     0x004 // 写
+#define PTE_X     0x008 // 执行
+#define PTE_U     0x010 // 用户
+#define PTE_G     0x020 // 全局
+#define PTE_A     0x040 // 已访问
+#define PTE_D     0x080 // 脏
+#define PTE_SOFT  0x300 // 保留给软件使用
 
 #define PAGE_TABLE_DIR (PTE_V)
 #define READ_ONLY (PTE_R | PTE_V)
