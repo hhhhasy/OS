@@ -359,36 +359,37 @@ void exit_range(pde_t *pgdir, uintptr_t start, uintptr_t end) {
  */
 int copy_range(pde_t *to, pde_t *from, uintptr_t start, uintptr_t end,
                bool share) {
+    //断言检验start和end是否是页对齐的，该地址范围是否在用户空间内
     assert(start % PGSIZE == 0 && end % PGSIZE == 0);
     assert(USER_ACCESS(start, end));
     // 按页单位复制内容
     do {
-        // 调用 get_pte 根据地址 start 找到进程 A 的 pte
+        // 调用 get_pte 根据地址 start 找到进程 A 的 pte，若ptep为空，说明在源进程中没有找到对应的页表项
         pte_t *ptep = get_pte(from, start, 0), *nptep;
         if (ptep == NULL) {
-            start = ROUNDDOWN(start + PTSIZE, PTSIZE);
+            start = ROUNDDOWN(start + PTSIZE, PTSIZE);//更新2Mib
             continue;
         }
-        // 调用 get_pte 根据地址 start 找到进程 B 的 pte。如果 pte 为 NULL，则分配一个 PT
         if (*ptep & PTE_V) {
             if ((nptep = get_pte(to, start, 1)) == NULL) {
                 return -E_NO_MEM;
             }
-            uint32_t perm = (*ptep & PTE_USER);
+            uint32_t perm = (*ptep & PTE_USER);//获取五个位的结果
             // 从 ptep 获取页面
             struct Page *page = pte2page(*ptep);
-            assert(page != NULL);
             int ret = 0;
 
             // 实现COW：映射共享页面
             if (share) {	
                 // 如果选择共享，那么就将子进程的页面映射到父进程的页面上
                 // 并且将子进程和父进程的页面权限设置为只读
+                cprintf("Sharing the page 0x%x\n", page2kva(page));
                 page_insert(from, page, start, perm & (~PTE_W));
                 ret = page_insert(to, page, start, perm & (~PTE_W));
             } else {
                 // 如果不选择共享，那么就直接复制父进程的页面到子进程的页面上
-                struct Page *npage=alloc_page();
+                struct Page *npage = alloc_page();
+                assert(page != NULL);
                 assert(npage!=NULL);
 
 
@@ -425,7 +426,7 @@ int copy_range(pde_t *to, pde_t *from, uintptr_t start, uintptr_t end,
 
             assert(ret == 0);
         }
-        start += PGSIZE;
+        start += PGSIZE;//按页来更新
     } while (start != 0 && start < end);
     return 0;
 }
@@ -439,14 +440,14 @@ void page_remove(pde_t *pgdir, uintptr_t la) {
     }
 }
 
-// page_insert - build the map of phy addr of an Page with the linear addr la
-// paramemters:
-//  pgdir: the kernel virtual base address of PDT
-//  page:  the Page which need to map
-//  la:    the linear address need to map
-//  perm:  the permission of this Page which is setted in related pte
-// return value: always 0
-// note: PT is changed, so the TLB need to be invalidate
+// page_insert - 将一个页的物理地址与线性地址 la 建立映射
+// 参数:
+//  pgdir: PDT 的内核虚拟基地址
+//  page:  需要映射的页
+//  la:    需要映射的线性地址
+//  perm:  该页的权限，将设置在相关的 pte 中
+// 返回值: 始终为 0
+// 注意: PT 已更改，因此需要使 TLB 失效
 int page_insert(pde_t *pgdir, struct Page *page, uintptr_t la, uint32_t perm) {
     pte_t *ptep = get_pte(pgdir, la, 1);
     if (ptep == NULL) {
